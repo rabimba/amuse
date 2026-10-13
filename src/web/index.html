@@ -3,66 +3,99 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Amuse HUD</title>
+  <title>Muse — Personal AI Agent</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="hud-container">
-    <!-- Header -->
+    <!-- Top Header (Draggable) -->
     <header class="hud-header">
       <div class="brand">
-        <div class="brand-badge">A</div>
-        <span class="brand-title">Amuse</span>
-        <span class="brand-tag">Gemini Live</span>
+        <div class="brand-badge">
+          <span class="brand-sparkle">✦</span>
+        </div>
+        <div class="brand-text-group">
+          <span class="brand-title">Muse</span>
+          <span class="brand-subtitle">by Amuse • 20 Connectors Active</span>
+        </div>
       </div>
       <div class="header-actions">
-        <button id="screenBtn" class="pill-btn" title="Capture & Share Screen with Gemini Vision">🖥️ Screen</button>
-        <button id="memoryBtn" class="pill-btn" title="View Active Memory & Action Plans">🧠 Memory</button>
-        <button id="notesBtn" class="pill-btn" title="View Local Markdown Notes (~/Documents/AmuseNotes)">📝 Notes</button>
-        <button id="connectorsBtn" class="pill-btn" title="View Active Muse Connectors">🔌 Connectors</button>
-        <span class="hotkey-pill">⌥⌥</span>
+        <span id="liveClockPill" class="clock-pill" title="Live System Clock">--:--</span>
+        <span class="hotkey-pill" title="Double-tap Option/Alt to toggle">⌥⌥</span>
         <button id="closeBtn" class="icon-btn" title="Hide HUD">✕</button>
       </div>
     </header>
 
-    <!-- Avatar & Status Orb -->
-    <div class="orb-section">
+    <!-- Expressive Muse Mascot Avatar & Multi-Layer Status -->
+    <section class="orb-section">
       <div id="statusOrb" class="status-orb state-idle">
-        <div class="orb-core"></div>
         <div class="orb-glow"></div>
         <div class="orb-ring ring-1"></div>
         <div class="orb-ring ring-2"></div>
+        <div class="orb-core">
+          <div class="muse-face">
+            <div class="muse-eyes">
+              <span class="muse-eye left"><span class="pupil"></span></span>
+              <span class="muse-eye right"><span class="pupil"></span></span>
+            </div>
+            <div class="muse-mouth"></div>
+          </div>
+        </div>
+        <div id="avatarPropBadge" class="avatar-prop-badge" title="Active Tool">✨</div>
       </div>
-      <div id="statusText" class="status-text">Ready</div>
-      <div id="statusDetails" class="status-details">Double-tap Option or click mic to talk</div>
-    </div>
+      <div class="status-meta">
+        <div id="statusText" class="status-text">Ready to help</div>
+        <div id="statusDetails" class="status-details">Speak naturally or type below — I'll handle the tools automatically</div>
+      </div>
+    </section>
 
-    <!-- Live Transcript / Chat Feed -->
+    <!-- Muse Structural Navigation Tabs (Chat, Feed, Goals, Library, Connectors) -->
+    <nav class="muse-nav-tabs">
+      <button id="tabChat" class="nav-tab active" data-tab="chat">💬 Chat</button>
+      <button id="tabFeed" class="nav-tab" data-tab="feed">✨ Ideas</button>
+      <button id="memoryBtn" class="nav-tab" data-tab="goals" title="Active Memory & Action Plans">🎯 Goals</button>
+      <button id="notesBtn" class="nav-tab" data-tab="library" title="Markdown Notes & Captures">📚 Library</button>
+      <button id="connectorsBtn" class="nav-tab" data-tab="connectors" title="20 Auto-Connecting Services">🔌 Connectors</button>
+      <button id="screenBtn" class="nav-tab nav-tab-accent" title="Capture & Share Screen with Gemini Vision">🖥️ Screen</button>
+    </nav>
+
+    <!-- Live Conversational Feed & Rich Cards -->
     <main id="chatFeed" class="chat-feed">
       <div class="welcome-message">
-        <p>👋 Hello! I'm <strong>Amuse</strong>—connected to your local Notes (<code>~/Documents/AmuseNotes</code>), Calendar, Reminders, Alarms, Messages, Contacts, Files, Screencast/Screen Capture, Web Search, LinkedIn, Gmail, Slack, Notion &amp; GitHub.</p>
+        <div class="welcome-title">Hey! I'm your personal Muse 👋</div>
+        <p>I'm connected directly to your Linux desktop, local Markdown Notes (<code>~/Documents/AmuseNotes</code>), Calendar, Reminders, Alarms, Screen Vision, Screencast Recorder, Active Memory, LinkedIn, Gmail, Slack, Notion, and GitHub.</p>
       </div>
     </main>
 
-    <!-- Bottom Input & Controls -->
+    <!-- Quick Action Suggestion Chips -->
+    <div class="quick-prompts">
+      <button class="prompt-chip" data-prompt="Look at my screen right now and tell me what I'm working on.">🖥️ Look at my screen</button>
+      <button class="prompt-chip" data-prompt="Create a note titled Meeting Takeaways with 3 action items and open it on my desktop.">📝 Create &amp; open a note</button>
+      <button class="prompt-chip" data-prompt="Schedule a LinkedIn post for 9:00 AM CST tomorrow about building our personal AI agent on Linux.">🚀 Schedule LinkedIn post</button>
+      <button class="prompt-chip" data-prompt="Set a timer for 15 seconds called Coffee Check.">⏰ 15s Timer</button>
+      <button class="prompt-chip" data-prompt="What time is it right now for me locally and in CST?">🕒 Local vs CST Time</button>
+    </div>
+
+    <!-- Bottom Input & Duplex Voice Bar -->
     <footer class="hud-footer">
       <div class="input-container">
-        <input type="text" id="textInput" placeholder="Ask anything or request a task..." autocomplete="off">
+        <input type="text" id="textInput" placeholder="Message Muse... (e.g. 'Create a note', 'Set a timer', 'Post on LinkedIn')" autocomplete="off">
         <button id="sendBtn" class="send-btn" title="Send message">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
           </svg>
         </button>
       </div>
       <div class="footer-bar">
-        <button id="micToggleBtn" class="mic-btn" title="Toggle Live Microphone">
+        <button id="micToggleBtn" class="mic-btn" title="Toggle Live Duplex Voice">
           <span class="mic-icon">🎙️</span>
-          <span id="micLabel">Start Voice</span>
+          <span id="micLabel">Talk Live</span>
         </button>
         <div class="audio-meter">
           <div id="audioBar" class="audio-bar-fill"></div>
         </div>
+        <span id="connectionIndicator" class="conn-indicator online">● Live</span>
       </div>
     </footer>
   </div>

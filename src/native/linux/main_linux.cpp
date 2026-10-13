@@ -1240,7 +1240,7 @@ public:
     }
 
     std::string executeTool(const std::string &toolName, const std::string &argsJson) {
-        std::lock_guard<std::mutex> lock(dbMutex_);
+        std::lock_guard<std::recursive_mutex> lock(dbMutex_);
         ensureDatabase();
         JsonHelper args(argsJson);
 
@@ -1422,7 +1422,7 @@ public:
     }
 
     void emitMemoryAndPlansToHUD() {
-        std::lock_guard<std::mutex> lock(dbMutex_);
+        std::lock_guard<std::recursive_mutex> lock(dbMutex_);
         ensureDatabase();
         std::ostringstream memBody;
         sqlite3_stmt *stmt = nullptr;
@@ -1457,7 +1457,7 @@ public:
     }
 
     void emitAllNotesToHUD() {
-        std::lock_guard<std::mutex> lock(dbMutex_);
+        std::lock_guard<std::recursive_mutex> lock(dbMutex_);
         ensureDatabase();
         sqlite3_stmt *stmt = nullptr;
         const char *sql = "SELECT title, date, body FROM notes ORDER BY id DESC LIMIT 10;";
@@ -1482,7 +1482,7 @@ public:
     }
 
     void emitConnectorsSummaryToHUD() {
-        std::lock_guard<std::mutex> lock(dbMutex_);
+        std::lock_guard<std::recursive_mutex> lock(dbMutex_);
         ensureDatabase();
         sqlite3_stmt *stmt = nullptr;
         const char *sql = "SELECT id, name, category, status, permission FROM connectors ORDER BY category ASC, name ASC;";
@@ -1510,7 +1510,7 @@ public:
 
 private:
     sqlite3 *db_ = nullptr;
-    std::mutex dbMutex_;
+    std::recursive_mutex dbMutex_;
     std::mutex cbMutex_;
     RichCardCallback richCardCb_;
     ImageFrameCallback imageFrameCb_;
@@ -2418,7 +2418,7 @@ private:
             int waitSec = std::min(secondsUntil, 86400);
             std::this_thread::sleep_for(std::chrono::seconds(waitSec));
             {
-                std::lock_guard<std::mutex> lk(dbMutex_);
+                std::lock_guard<std::recursive_mutex> lk(dbMutex_);
                 if (db_) {
                     std::string upd = "UPDATE alarms SET status='triggered' WHERE id='" + jsonEscape(id) + "';";
                     sqlite3_exec(db_, upd.c_str(), nullptr, nullptr, nullptr);
@@ -3048,7 +3048,7 @@ private:
             int waitSec = std::min(secondsUntil, 86400);
             std::this_thread::sleep_for(std::chrono::seconds(waitSec));
             {
-                std::lock_guard<std::mutex> lk(dbMutex_);
+                std::lock_guard<std::recursive_mutex> lk(dbMutex_);
                 if (db_) {
                     std::string upd = "UPDATE scheduled_tasks SET status='executed' WHERE id='" + jsonEscape(id) + "';";
                     sqlite3_exec(db_, upd.c_str(), nullptr, nullptr, nullptr);
@@ -3061,7 +3061,7 @@ private:
                 std::string url = "https://www.linkedin.com/feed/?shareActive=true&text=" + urlEncode(details);
                 openOnDesktop(url);
             } else if (taskType == "screencast") {
-                std::lock_guard<std::mutex> lk(dbMutex_);
+                std::lock_guard<std::recursive_mutex> lk(dbMutex_);
                 recordScreencast(title, 5, "");
             }
         }).detach();
@@ -3506,6 +3506,11 @@ public:
         evalJS("window.appendTranscriptMessage && window.appendTranscriptMessage(" + obj + ");");
     }
 
+    void updateTranscriptDelta(const std::string &role, const std::string &text) {
+        std::string obj = "{\"role\":\"" + jsonEscape(role) + "\",\"text\":\"" + jsonEscape(text) + "\"}";
+        evalJS("window.updateTranscriptDelta && window.updateTranscriptDelta(" + obj + ");");
+    }
+
     void appendRichCard(const RichCardEvent &card) {
         std::string obj = "{"
             "\"cardType\":\"" + jsonEscape(card.cardType) + "\","
@@ -3559,6 +3564,7 @@ public:
         } else if (type == "sendTextMessage") {
             std::string text = payload.getString("text", "");
             if (!text.empty()) {
+                std::cerr << "[Amuse] User text input from HUD: " << text << std::endl;
                 sendToNode("{\"type\":\"user_text_input\",\"text\":\"" + jsonEscape(text) + "\"}");
             }
         } else if (type == "openFile") {
@@ -3573,9 +3579,21 @@ public:
         } else if (type == "showMemoryAndPlans") {
             LocalConnectorsManager::instance().emitMemoryAndPlansToHUD();
         } else if (type == "shareScreenSnapshot") {
-            std::thread([]() {
+            std::thread([this]() {
                 LocalConnectorsManager::instance().executeTool("take_screenshot", "{\"title\":\"Live_Screen_Vision\"}");
+                sendToNode("{\"type\":\"user_text_input\",\"text\":\"I just shared a live screenshot of my screen with you. Tell me what you see on my screen right now.\"}");
             }).detach();
+        } else if (type == "runDirectTool") {
+            std::string toolName = payload.getString("toolName", "");
+            std::string argsStr = payload.getObjectJson("args", "{}");
+            if (!toolName.empty()) {
+                std::thread([this, toolName, argsStr]() {
+                    setStatus("thinking", "Executing " + toolName + "...");
+                    LocalConnectorsManager::instance().executeTool(toolName, argsStr);
+                    appendTranscript("tool", "Connected & executed " + toolName, toolName);
+                    setStatus("idle", "Ready");
+                }).detach();
+            }
         }
     }
 
@@ -3595,8 +3613,8 @@ private:
 
     void setupHUDWindow() {
         window_ = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_title(GTK_WINDOW(window_), "Amuse HUD");
-        gtk_window_set_default_size(GTK_WINDOW(window_), 480, 620);
+        gtk_window_set_title(GTK_WINDOW(window_), "Muse HUD");
+        gtk_window_set_default_size(GTK_WINDOW(window_), 520, 700);
         gtk_window_set_decorated(GTK_WINDOW(window_), FALSE);
         gtk_window_set_keep_above(GTK_WINDOW(window_), TRUE);
         gtk_window_stick(GTK_WINDOW(window_));
@@ -3786,6 +3804,10 @@ private:
                     return G_SOURCE_REMOVE;
                 }, nullptr);
             }
+        } else if (type == "transcript_delta") {
+            std::string role = msg.getString("role", "agent");
+            std::string text = msg.getString("text", "");
+            updateTranscriptDelta(role, text);
         } else if (type == "transcript") {
             std::string role = msg.getString("role", "agent");
             std::string text = msg.getString("text", "");
@@ -3797,7 +3819,7 @@ private:
             std::string argsJson = msg.getObjectJson("arguments", "{}");
 
             std::cerr << "[Amuse] Executing local tool: " << toolName << "(" << argsJson << ")" << std::endl;
-            setStatus("thinking", "Accessing " + toolName + "...");
+            setStatus("thinking", "Working with " + toolName + "...");
 
             std::thread([this, callId, toolName, argsJson]() {
                 std::string resultJson = LocalConnectorsManager::instance().executeTool(toolName, argsJson);

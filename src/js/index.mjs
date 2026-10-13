@@ -18,6 +18,10 @@ client.on('status', (status, details) => {
   sendToNative({ type: 'agent_status', status, details });
 });
 
+client.on('transcriptDelta', (role, text) => {
+  sendToNative({ type: 'transcript_delta', role, text });
+});
+
 client.on('transcript', (role, text) => {
   sendToNative({ type: 'transcript', role, text });
 });

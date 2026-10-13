@@ -1,4 +1,4 @@
-// Amuse Web HUD Client Logic
+// Muse (Amuse) Web HUD Client Logic
 const chatFeed = document.getElementById('chatFeed');
 const textInput = document.getElementById('textInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -9,8 +9,30 @@ const statusOrb = document.getElementById('statusOrb');
 const statusText = document.getElementById('statusText');
 const statusDetails = document.getElementById('statusDetails');
 const audioBar = document.getElementById('audioBar');
+const liveClockPill = document.getElementById('liveClockPill');
+const avatarPropBadge = document.getElementById('avatarPropBadge');
 
 let isMicActive = false;
+let streamingBubbles = { user: null, agent: null };
+
+// Live System Clock in Header
+function updateHeaderClock() {
+  if (!liveClockPill) return;
+  const now = new Date();
+  try {
+    liveClockPill.textContent = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'
+    }).format(now);
+  } catch {
+    liveClockPill.textContent = now.toLocaleTimeString();
+  }
+}
+updateHeaderClock();
+setInterval(updateHeaderClock, 1000);
 
 // Send bridge message to native host
 function postBridgeMessage(type, payload = {}) {
@@ -21,14 +43,21 @@ function postBridgeMessage(type, payload = {}) {
   }
 }
 
-// User text submission
+// Submit a text prompt to Muse
+function sendPromptToMuse(rawText) {
+  const text = (rawText || '').trim();
+  if (!text) return;
+  setActiveNavTab('chat');
+  appendMessage('user', text);
+  window.setAgentStatus('thinking', 'Working on your request...');
+  postBridgeMessage('sendTextMessage', { text });
+}
+
 function submitUserMessage() {
   const text = textInput.value.trim();
   if (!text) return;
   textInput.value = '';
-  
-  appendMessage('user', text);
-  postBridgeMessage('sendTextMessage', { text });
+  sendPromptToMuse(text);
 }
 
 sendBtn.addEventListener('click', submitUserMessage);
@@ -37,6 +66,16 @@ textInput.addEventListener('keydown', (e) => {
     e.preventDefault();
     submitUserMessage();
   }
+});
+
+// Quick Prompt Suggestion Chips
+document.querySelectorAll('.prompt-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    const prompt = chip.getAttribute('data-prompt');
+    if (prompt) {
+      sendPromptToMuse(prompt);
+    }
+  });
 });
 
 // Mic toggle
@@ -50,40 +89,127 @@ function updateMicUI(active) {
   if (active) {
     micToggleBtn.classList.add('active');
     micLabel.textContent = 'Mute Voice';
+    if (avatarPropBadge) avatarPropBadge.textContent = '🎙️';
   } else {
     micToggleBtn.classList.remove('active');
-    micLabel.textContent = 'Start Voice';
+    micLabel.textContent = 'Talk Live';
     audioBar.style.width = '0%';
   }
 }
 
+// Navigation Tabs (Chat, Ideas, Goals, Library, Connectors, Screen)
+const navTabs = document.querySelectorAll('.nav-tab[data-tab]');
+function setActiveNavTab(tabName) {
+  navTabs.forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+  });
+}
+
+const tabChat = document.getElementById('tabChat');
+const tabFeed = document.getElementById('tabFeed');
 const screenBtn = document.getElementById('screenBtn');
 const memoryBtn = document.getElementById('memoryBtn');
 const notesBtn = document.getElementById('notesBtn');
 const connectorsBtn = document.getElementById('connectorsBtn');
 
+if (tabChat) {
+  tabChat.addEventListener('click', () => {
+    setActiveNavTab('chat');
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+  });
+}
+
+if (tabFeed) {
+  tabFeed.addEventListener('click', () => {
+    setActiveNavTab('feed');
+    renderMuseIdeasFeed();
+  });
+}
+
 if (screenBtn) {
   screenBtn.addEventListener('click', () => {
+    if (avatarPropBadge) avatarPropBadge.textContent = '📸';
+    window.setAgentStatus('thinking', 'Capturing screen & streaming to Gemini Vision...');
     postBridgeMessage('shareScreenSnapshot');
   });
 }
 
 if (memoryBtn) {
   memoryBtn.addEventListener('click', () => {
+    setActiveNavTab('goals');
+    if (avatarPropBadge) avatarPropBadge.textContent = '🧠';
     postBridgeMessage('showMemoryAndPlans');
   });
 }
 
 if (notesBtn) {
   notesBtn.addEventListener('click', () => {
+    setActiveNavTab('library');
+    if (avatarPropBadge) avatarPropBadge.textContent = '📝';
     postBridgeMessage('showNotesViewer');
   });
 }
 
 if (connectorsBtn) {
   connectorsBtn.addEventListener('click', () => {
+    setActiveNavTab('connectors');
+    if (avatarPropBadge) avatarPropBadge.textContent = '🔌';
     postBridgeMessage('showConnectorsStatus');
   });
+}
+
+function renderMuseIdeasFeed() {
+  const ideas = [
+    {
+      title: '✨ Proactive Idea: Capture & Explain My Screen',
+      badge: 'VISION',
+      subtitle: 'Live Multimodal Desktop Grounding',
+      body: 'Take a high-res screenshot of your current desktop, stream it to Gemini Vision, and summarize what you are working on.',
+      prompt: 'Take a screenshot of my screen right now and tell me what you see.'
+    },
+    {
+      title: '🚀 Proactive Idea: LinkedIn Launch Post',
+      badge: 'SOCIAL',
+      subtitle: 'Auto-Connect LinkedIn + Clipboard + Calendar',
+      body: 'Draft an engaging LinkedIn update, copy it to your clipboard, schedule a 9:00 AM CST reminder, and open the LinkedIn post composer.',
+      prompt: 'Draft a LinkedIn post about building our Linux personal AI agent, schedule it for 9:00 AM CST, and open the composer.'
+    },
+    {
+      title: '🎬 Proactive Idea: 5-Second Desktop Screencast',
+      badge: 'VIDEO',
+      subtitle: 'FFmpeg H.264 MP4 Recording',
+      body: 'Record a 5-second MP4 video screencast of your active Linux desktop to ~/Videos/Amuse/.',
+      prompt: 'Record a 5 second screencast of my desktop called Demo Capture.'
+    },
+    {
+      title: '🛠️ Proactive Idea: Build & Run Custom Python Tool',
+      badge: 'BUILDER',
+      subtitle: 'Dynamic Tool Builder (~/.amuse/custom_tools)',
+      body: 'Write and execute a custom Python diagnostic script that inspects CPU, RAM, and disk usage.',
+      prompt: 'Build and run a custom Python tool called resource_check that prints my current disk space and load average.'
+    }
+  ];
+
+  ideas.forEach((idea) => {
+    const el = document.createElement('div');
+    el.className = 'rich-card card-info';
+    el.innerHTML = `
+      <div class="card-header">
+        <span class="card-title">${escapeHtml(idea.title)}</span>
+        <span class="card-badge">${escapeHtml(idea.badge)}</span>
+      </div>
+      <div class="card-subtitle">${escapeHtml(idea.subtitle)}</div>
+      <div class="card-body">${escapeHtml(idea.body)}</div>
+      <div class="card-actions">
+        <button class="card-action-btn">Run with Muse →</button>
+      </div>
+    `;
+    el.querySelector('.card-action-btn').addEventListener('click', () => {
+      sendPromptToMuse(idea.prompt);
+    });
+    chatFeed.appendChild(el);
+  });
+  chatFeed.scrollTop = chatFeed.scrollHeight;
 }
 
 // Close HUD button
@@ -104,8 +230,34 @@ if (hudHeader) {
   });
 }
 
-// Appends message to chat log
+function escapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+}
+
+// Live Streaming Transcript Delta (word-by-word)
+window.updateTranscriptDelta = function(msg) {
+  if (!msg || !msg.text) return;
+  const role = msg.role || 'agent';
+  let bubble = streamingBubbles[role];
+  if (!bubble || !bubble.isConnected) {
+    bubble = document.createElement('div');
+    bubble.className = `message-bubble ${role} streaming`;
+    chatFeed.appendChild(bubble);
+    streamingBubbles[role] = bubble;
+  }
+  bubble.textContent = msg.text;
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+};
+
+// Finalized message to chat log
 function appendMessage(role, text) {
+  if (streamingBubbles[role] && streamingBubbles[role].isConnected) {
+    streamingBubbles[role].textContent = text;
+    streamingBubbles[role].classList.remove('streaming');
+    streamingBubbles[role] = null;
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+    return;
+  }
   const bubble = document.createElement('div');
   bubble.className = `message-bubble ${role}`;
   bubble.textContent = text;
@@ -113,16 +265,28 @@ function appendMessage(role, text) {
   chatFeed.scrollTop = chatFeed.scrollHeight;
 }
 
-function appendToolChip(toolName, summary) {
-  const chip = document.createElement('div');
-  chip.className = 'tool-chip';
-  chip.innerHTML = `<span>⚡</span> <strong>${escapeHtml(toolName)}:</strong> ${escapeHtml(summary)}`;
-  chatFeed.appendChild(chip);
-  chatFeed.scrollTop = chatFeed.scrollHeight;
+function getToolPropIcon(toolName) {
+  const t = String(toolName || '').toLowerCase();
+  if (t.includes('note')) return '📝';
+  if (t.includes('alarm') || t.includes('timer') || t.includes('schedule') || t.includes('time')) return '⏰';
+  if (t.includes('screen') || t.includes('photo')) return '📸';
+  if (t.includes('social') || t.includes('linkedin')) return '🚀';
+  if (t.includes('email') || t.includes('mail')) return '✉️';
+  if (t.includes('memory') || t.includes('plan')) return '🧠';
+  if (t.includes('custom_tool') || t.includes('computer') || t.includes('file')) return '💻';
+  if (t.includes('calendar') || t.includes('reminder')) return '📅';
+  if (t.includes('message') || t.includes('contact')) return '💬';
+  return '⚡';
 }
 
-function escapeHtml(str) {
-  return String(str || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+function appendToolChip(toolName, summary) {
+  const icon = getToolPropIcon(toolName);
+  if (avatarPropBadge) avatarPropBadge.textContent = icon;
+  const chip = document.createElement('div');
+  chip.className = 'tool-chip';
+  chip.innerHTML = `<span>${icon}</span> <strong>${escapeHtml(toolName)}:</strong> ${escapeHtml(summary)}`;
+  chatFeed.appendChild(chip);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
 }
 
 window.openDesktopPath = function(filePath) {
@@ -137,6 +301,20 @@ window.appendRichCard = function(card) {
   const badge = card.badge ? `<span class="card-badge">${escapeHtml(card.badge)}</span>` : '';
   const subtitle = card.subtitle ? `<div class="card-subtitle">${escapeHtml(card.subtitle)}</div>` : '';
   const body = card.body ? `<div class="card-body">${escapeHtml(card.body)}</div>` : '';
+
+  // Inline media preview for screenshots (.png) and screencasts (.mp4)
+  let mediaHtml = '';
+  if (card.filePath) {
+    const fp = String(card.filePath);
+    if (fp.endsWith('.png') || fp.endsWith('.jpg')) {
+      const fileUrl = fp.startsWith('file://') ? fp : `file://${fp}`;
+      mediaHtml = `<div class="card-media-preview"><img src="${escapeHtml(fileUrl)}" alt="Captured Screen" /></div>`;
+    } else if (fp.endsWith('.mp4') || fp.endsWith('.webm')) {
+      const fileUrl = fp.startsWith('file://') ? fp : `file://${fp}`;
+      mediaHtml = `<div class="card-media-preview"><video src="${escapeHtml(fileUrl)}" controls preload="metadata"></video></div>`;
+    }
+  }
+
   let actionHtml = '';
   if (card.filePath) {
     const safePath = escapeHtml(card.filePath);
@@ -145,10 +323,11 @@ window.appendRichCard = function(card) {
 
   el.innerHTML = `
     <div class="card-header">
-      <span class="card-title">${escapeHtml(card.title || 'Amuse')}</span>
+      <span class="card-title">${escapeHtml(card.title || 'Muse')}</span>
       ${badge}
     </div>
     ${subtitle}
+    ${mediaHtml}
     ${body}
     ${actionHtml}
   `;
@@ -167,24 +346,30 @@ window.appendRichCard = function(card) {
 // Public API called by native layer
 window.setAgentStatus = function(state, details) {
   statusOrb.className = `status-orb state-${state}`;
-  
-  switch(state) {
+
+  switch (state) {
     case 'listening':
-      statusText.textContent = 'Listening...';
+      statusText.textContent = 'Listening to you...';
+      if (avatarPropBadge) avatarPropBadge.textContent = '🎙️';
       updateMicUI(true);
       break;
     case 'thinking':
-      statusText.textContent = 'Thinking & Processing...';
+      statusText.textContent = 'Muse is working...';
+      if (details && avatarPropBadge) {
+        avatarPropBadge.textContent = getToolPropIcon(details);
+      }
       break;
     case 'speaking':
-      statusText.textContent = 'Speaking...';
+      statusText.textContent = 'Muse is speaking...';
+      if (avatarPropBadge) avatarPropBadge.textContent = '🔊';
       break;
     case 'idle':
     default:
-      statusText.textContent = 'Ready';
+      statusText.textContent = 'Ready to help';
+      if (avatarPropBadge) avatarPropBadge.textContent = '✨';
       break;
   }
-  
+
   if (details) {
     statusDetails.textContent = details;
   }
