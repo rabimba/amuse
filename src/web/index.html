@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amuse HUD</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="hud-container">
+    <!-- Header -->
+    <header class="hud-header">
+      <div class="brand">
+        <div class="brand-badge">A</div>
+        <span class="brand-title">Amuse</span>
+        <span class="brand-tag">Gemini Live</span>
+      </div>
+      <div class="header-actions">
+        <span class="hotkey-pill">⌥⌥ Option</span>
+        <button id="closeBtn" class="icon-btn" title="Hide HUD">✕</button>
+      </div>
+    </header>
+
+    <!-- Avatar & Status Orb -->
+    <div class="orb-section">
+      <div id="statusOrb" class="status-orb state-idle">
+        <div class="orb-core"></div>
+        <div class="orb-glow"></div>
+        <div class="orb-ring ring-1"></div>
+        <div class="orb-ring ring-2"></div>
+      </div>
+      <div id="statusText" class="status-text">Ready</div>
+      <div id="statusDetails" class="status-details">Double-tap Option or click mic to talk</div>
+    </div>
+
+    <!-- Live Transcript / Chat Feed -->
+    <main id="chatFeed" class="chat-feed">
+      <div class="welcome-message">
+        <p>👋 Hello! I'm Amuse, connected to Gemini with local access to your Messages, Calendar, Contacts, and Notes.</p>
+      </div>
+    </main>
+
+    <!-- Bottom Input & Controls -->
+    <footer class="hud-footer">
+      <div class="input-container">
+        <input type="text" id="textInput" placeholder="Ask anything or request a task..." autocomplete="off">
+        <button id="sendBtn" class="send-btn" title="Send message">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+      <div class="footer-bar">
+        <button id="micToggleBtn" class="mic-btn" title="Toggle Live Microphone">
+          <span class="mic-icon">🎙️</span>
+          <span id="micLabel">Start Voice</span>
+        </button>
+        <div class="audio-meter">
+          <div id="audioBar" class="audio-bar-fill"></div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

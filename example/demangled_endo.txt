@@ -1,0 +1,14 @@
+Endo.HatchImageProvider
+Endo.ComposerDragWindow
+Endo.SandboxFileResolving
+Endo.AvatarThemeSource
+Endo.DictationBackendSession
+Endo.DictationBackend
+Endo.IncrementalInsertionControl
+Endo.HatchClientTransportHandle
+Endo.HatchClientTransportFactory
+Endo.BrowserOriginMetadataReading
+Endo.InternalSettingsBackend
+Endo.DoubleOptionTapSessionCoordinating
+Endo.FirstRunHostProbes
+Endo.PlaygroundSectionView

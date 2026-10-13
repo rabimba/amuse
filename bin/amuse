@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Ensure Node environment from NVM if present
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+  source "$HOME/.nvm/nvm.sh"
+fi
+
+BRIDGE="$DIR/bin/amuse-bridge"
+
+if [ ! -f "$BRIDGE" ]; then
+  echo "==> Amuse bridge binary not found. Compiling now..."
+  bash "$DIR/scripts/build.sh"
+fi
+
+COMMAND="${1:-gui}"
+
+case "$COMMAND" in
+  gui|start)
+    echo "==> Starting Amuse Ambient HUD (Double-tap Option to toggle HUD)..."
+    exec "$BRIDGE"
+    ;;
+  tools)
+    exec "$BRIDGE" tools
+    ;;
+  call)
+    shift
+    exec "$BRIDGE" call "$@"
+    ;;
+  config)
+    shift
+    if [ "$1" == "--key" ] && [ -n "$2" ]; then
+      node -e "
+        import('$DIR/src/js/config.mjs').then(m => {
+          m.saveConfig({ apiKey: '$2' });
+          console.log('API key saved successfully to ~/.amuse/config.json');
+        });
+      "
+    elif [ "$1" == "--voice" ] && [ -n "$2" ]; then
+      node -e "
+        import('$DIR/src/js/config.mjs').then(m => {
+          m.saveConfig({ voice: '$2' });
+          console.log('Voice set to $2 in ~/.amuse/config.json');
+        });
+      "
+    else
+      node -e "
+        import('$DIR/src/js/config.mjs').then(m => {
+          const cfg = m.loadConfig();
+          console.log('Current Amuse Configuration:');
+          console.log('  Model:', cfg.model);
+          console.log('  Voice:', cfg.voice);
+          console.log('  API Key:', cfg.apiKey ? (cfg.apiKey.slice(0, 8) + '...' + cfg.apiKey.slice(-4)) : '(not set)');
+        });
+      "
+    fi
+    ;;
+  test)
+    echo "=========================================="
+    echo "           AMUSE SYSTEM TEST             "
+    echo "=========================================="
+    echo ""
+    echo "1. Testing iMessage Connector:"
+    "$BRIDGE" call get_recent_messages '{"limit": 2}'
+    echo ""
+    echo "2. Testing Notes Connector:"
+    "$BRIDGE" call search_notes '{"limit": 2}'
+    echo ""
+    echo "3. Testing Calendar Connector:"
+    "$BRIDGE" call get_calendar_events '{"days_ahead": 7}'
+    echo ""
+    echo "4. Testing Contacts Connector:"
+    "$BRIDGE" call search_contacts '{"name": "test"}'
+    echo ""
+    echo "5. Testing Gemini Live Tool Declarations:"
+    "$BRIDGE" tools | grep '"name"' || true
+    echo ""
+    echo "All local connector bridges executed successfully!"
+    ;;
+  help|--help|-h)
+    echo "Amuse - Personal AI Agent for macOS powered by Gemini"
+    echo ""
+    echo "Usage:"
+    echo "  amuse [start|gui]            Launch ambient floating HUD (Double-tap Option to toggle)"
+    echo "  amuse config --key <KEY>     Set your Google AI Studio Gemini API Key"
+    echo "  amuse config --voice <VOICE> Set Gemini Live voice (Puck, Charon, Kore, Fenrir, Aoede)"
+    echo "  amuse test                   Run diagnostics on local Apple connectors"
+    echo "  amuse tools                  List Gemini tool declarations"
+    echo "  amuse call <name> [json]     Directly invoke a local connector tool"
+    echo ""
+    ;;
+  *)
+    exec "$BRIDGE" "$@"
+    ;;
+esac
