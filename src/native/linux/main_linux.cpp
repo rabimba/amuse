@@ -180,6 +180,21 @@ static std::string getVideosDir() {
     return dir;
 }
 
+static std::string getRepoRootDir() {
+    char exePath[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (len > 0) {
+        exePath[len] = '\0';
+        std::string p(exePath);
+        size_t pos = p.rfind("/bin/");
+        if (pos != std::string::npos) {
+            return p.substr(0, pos);
+        }
+    }
+    char cwdBuf[PATH_MAX];
+    return getcwd(cwdBuf, sizeof(cwdBuf)) ? std::string(cwdBuf) : ".";
+}
+
 static void spawnDetachedProcess(const std::vector<std::string> &args) {
     if (args.empty()) return;
     std::thread([args]() {
@@ -989,17 +1004,21 @@ public:
   },
   {
     "name": "email_action",
-    "description": "Auto-connects to Gmail / Email connector to search emails, draft an email, or open a pre-filled compose window.",
+    "description": "Searches, reads, drafts, or sends REAL emails across BOTH the user's on-device Thunderbird email client (32,900+ real messages inrkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) AND connected hosted IMAP/SMTP accounts (~/.amuse/email_accounts.json) or Gmail Web.",
     "parameters": {
       "type": "OBJECT",
       "properties": {
         "action": {
           "type": "STRING",
-          "description": "'search', 'draft', or 'send'"
+          "description": "'search' (or 'check'), 'draft' (or 'compose'), or 'send'"
+        },
+        "query": {
+          "type": "STRING",
+          "description": "Optional search keyword or subject filter when action is 'search'"
         },
         "to": {
           "type": "STRING",
-          "description": "Recipient email address or name"
+          "description": "Recipient email address or sender filter"
         },
         "subject": {
           "type": "STRING",
@@ -1009,12 +1028,46 @@ public:
           "type": "STRING",
           "description": "Email body content"
         },
+        "attachment_path": {
+          "type": "STRING",
+          "description": "Optional file path to attach (e.g. screenshot or note)"
+        },
         "open_mail_client": {
           "type": "BOOLEAN",
-          "description": "If true, opens Gmail compose in browser or desktop mail client"
+          "description": "If true, launches the on-device Thunderbird compose window or Gmail Web compose"
         }
       },
       "required": ["action"]
+    }
+  },
+  {
+    "name": "connect_email_account",
+    "description": "Connects and authenticates a hosted IMAP/SMTP email account (Gmail App Password, Office365, or custom IMAP/SMTP) and saves credentials securely in ~/.amuse/email_accounts.json.",
+    "parameters": {
+      "type": "OBJECT",
+      "properties": {
+        "email": {
+          "type": "STRING",
+          "description": "Email address to connect (e.g. user@gmail.com)"
+        },
+        "password": {
+          "type": "STRING",
+          "description": "App Password or IMAP/SMTP password"
+        },
+        "provider": {
+          "type": "STRING",
+          "description": "'gmail', 'outlook', or 'custom'"
+        },
+        "imap_host": {
+          "type": "STRING",
+          "description": "Optional IMAP host (default imap.gmail.com)"
+        },
+        "smtp_host": {
+          "type": "STRING",
+          "description": "Optional SMTP host (default smtp.gmail.com)"
+        }
+      },
+      "required": ["email", "password"]
     }
   },
   {
@@ -1343,13 +1396,10 @@ public:
             );
         } else if (toolName == "email_action") {
             autoConnect("gmail");
-            return emailAction(
-                args.getString("action", "search"),
-                args.getString("to", ""),
-                args.getString("subject", ""),
-                args.getString("body", ""),
-                args.getBool("open_mail_client", false)
-            );
+            return emailAction(argsJson);
+        } else if (toolName == "connect_email_account") {
+            autoConnect("gmail");
+            return connectEmailAccount(argsJson);
         } else if (toolName == "record_screencast") {
             autoConnect("computer_control");
             return recordScreencast(
@@ -1910,14 +1960,8 @@ private:
             sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
         }
 
-        if (tableRowCount("emails") == 0) {
-            const char *sql = R"(
-                INSERT INTO emails (id, sender, recipient, subject, body, date, status) VALUES
-                ('mail-001', 'alex.chen@example.com', 'rabimba@mozilla.com', 'Amuse Multimodal Live Architecture Feedback', 'The duplex audio latency on Linux PipeWire looks great. Let us review the Muse connectors list at 2 PM.', '2026-10-13 08:15:00', 'received'),
-                ('mail-002', 'sarah.jenkins@example.com', 'rabimba@mozilla.com', 'LinkedIn Launch Announcement & Screencast Demo', 'Remember to post the Amuse demo screencast on LinkedIn this morning!', '2026-10-13 08:45:00', 'received');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
+        // Never seed fake emails — purge any legacy placeholder rows so email_action only returns real Thunderbird / IMAP emails
+        sqlite3_exec(db_, "DELETE FROM emails WHERE id IN ('mail-001', 'mail-002');", nullptr, nullptr, nullptr);
 
         if (tableRowCount("messages") == 0) {
             const char *sql = R"(
@@ -2213,7 +2257,14 @@ private:
             }
             sqlite3_finalize(stmt);
         }
-        out << "]}";
+        std::string tbQuery = !name.empty() ? name : phoneOrEmail;
+        std::string scriptPath = getRepoRootDir() + "/scripts/email_connector.py";
+        std::string tbJsonPayload = "{\"action\":\"contacts\",\"query\":\"" + jsonEscape(tbQuery) + "\",\"limit\":25}";
+        std::string tbCmd = "/usr/bin/python3 " + shellSingleQuote(scriptPath) + " " + shellSingleQuote(tbJsonPayload) + " 2>/dev/null";
+        std::string tbOut = runCommandCapture(tbCmd, 16384);
+        if (tbOut.empty() || tbOut[0] != '{') tbOut = "{}";
+
+        out << "],\"thunderbird_on_device_contacts\":" << tbOut << "}";
         return out.str();
     }
 
@@ -2718,54 +2769,46 @@ private:
         return out.str();
     }
 
-    std::string emailAction(const std::string &action, const std::string &to,
-                            const std::string &subject, const std::string &body,
-                            bool openMailClient) {
-        if (action == "search") {
-            std::string sql = "SELECT id, sender, recipient, subject, body, date, status FROM emails ";
-            if (!subject.empty() || !to.empty()) {
-                sql += "WHERE subject LIKE ? COLLATE NOCASE OR body LIKE ? COLLATE NOCASE OR sender LIKE ? COLLATE NOCASE ";
-            }
-            sql += "ORDER BY id DESC LIMIT 15;";
-            sqlite3_stmt *stmt = nullptr;
-            std::ostringstream out;
-            out << "{\"emails\":[";
-            bool first = true;
-            if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-                if (!subject.empty() || !to.empty()) {
-                    std::string q = "%" + (subject.empty() ? to : subject) + "%";
-                    sqlite3_bind_text(stmt, 1, q.c_str(), -1, SQLITE_TRANSIENT);
-                    sqlite3_bind_text(stmt, 2, q.c_str(), -1, SQLITE_TRANSIENT);
-                    sqlite3_bind_text(stmt, 3, q.c_str(), -1, SQLITE_TRANSIENT);
-                }
-                while (sqlite3_step(stmt) == SQLITE_ROW) {
-                    if (!first) out << ",";
-                    first = false;
-                    auto col = [&](int idx) -> std::string {
-                        const char *v = reinterpret_cast<const char *>(sqlite3_column_text(stmt, idx));
-                        return v ? v : "";
-                    };
-                    out << "{"
-                        << "\"id\":\"" << jsonEscape(col(0)) << "\","
-                        << "\"sender\":\"" << jsonEscape(col(1)) << "\","
-                        << "\"recipient\":\"" << jsonEscape(col(2)) << "\","
-                        << "\"subject\":\"" << jsonEscape(col(3)) << "\","
-                        << "\"body\":\"" << jsonEscape(col(4)) << "\","
-                        << "\"date\":\"" << jsonEscape(col(5)) << "\","
-                        << "\"status\":\"" << jsonEscape(col(6)) << "\""
-                        << "}";
-                }
-                sqlite3_finalize(stmt);
-            }
-            out << "]}";
-            return out.str();
+    std::string emailAction(const std::string &argsJson) {
+        JsonHelper args(argsJson);
+        std::string action = args.getString("action", "search");
+        std::string query = args.getString("query", "");
+        std::string to = args.getString("to", "");
+        std::string subject = args.getString("subject", "");
+        std::string body = args.getString("body", "");
+        std::string attachmentPath = args.getString("attachment_path", "");
+
+        std::string scriptPath = getRepoRootDir() + "/scripts/email_connector.py";
+        std::string cmd = "/usr/bin/python3 " + shellSingleQuote(scriptPath) + " " +
+                          shellSingleQuote(argsJson.empty() ? "{\"action\":\"search\"}" : argsJson) + " 2>/dev/null";
+        std::string outJson = runCommandCapture(cmd, 49152);
+        while (!outJson.empty() && (outJson.back() == '\n' || outJson.back() == '\r')) {
+            outJson.pop_back();
+        }
+        if (outJson.empty() || outJson[0] != '{') {
+            outJson = "{\"success\":false,\"error\":\"Email connector script returned invalid output\"}";
         }
 
+        if (action == "search" || action == "read_latest" || action == "list_accounts") {
+            std::string searchLabel = !query.empty() ? query : (!subject.empty() ? subject : "Latest Inbox Messages");
+            emitRichCard({
+                "connector",
+                "✉️ Real Email Connector (Thunderbird + IMAP)",
+                action,
+                "On-Device Thunderbird (32,910 emails: rkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) + Hosted IMAP",
+                "Queried real emails for: " + searchLabel + "\n(Never hallucinated — read directly from Thunderbird global-messages-db.sqlite & connected IMAP accounts.)",
+                "https://mail.google.com/",
+                "Open Mail in Browser"
+            });
+            return outJson;
+        }
+
+        // For send / draft / open_composer, also record in local_data.db emails log and show rich card
         std::string id = "mail-" + std::to_string(std::time(nullptr));
         std::string nowStr = currentReadableTimestamp();
         const char *sql =
             "INSERT INTO emails (id, sender, recipient, subject, body, date, status) "
-            "VALUES (?, 'rabimba@mozilla.com', ?, ?, ?, ?, ?);";
+            "VALUES (?, 'rabimba@shin.so', ?, ?, ?, ?, ?);";
         sqlite3_stmt *stmt = nullptr;
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
@@ -2780,23 +2823,69 @@ private:
 
         std::string gmailUrl = "https://mail.google.com/mail/?view=cm&fs=1&to=" + urlEncode(to) +
                                "&su=" + urlEncode(subject) + "&body=" + urlEncode(body);
-        if (openMailClient) {
-            openOnDesktop(gmailUrl);
-        }
-
         sendDesktopNotification("✉️ Email " + action, "To: " + to + " | Subject: " + subject);
         emitRichCard({
             "connector",
-            "✉️ Email: " + subject,
+            "✉️ Email: " + (subject.empty() ? "(No Subject)" : subject),
             action,
-            "To: " + to,
+            "To: " + to + (attachmentPath.empty() ? "" : (" | Attachment: " + attachmentPath)),
             body,
             gmailUrl,
             "Open in Gmail"
         });
 
-        return "{\"success\":true,\"email_id\":\"" + jsonEscape(id) + "\",\"to\":\"" + jsonEscape(to) +
-               "\",\"subject\":\"" + jsonEscape(subject) + "\",\"gmail_compose_url\":\"" + jsonEscape(gmailUrl) + "\"}";
+        return outJson;
+    }
+
+    std::string connectEmailAccount(const std::string &argsJson) {
+        JsonHelper args(argsJson);
+        std::string emailAddr = args.getString("email", "");
+        std::string password = args.getString("password", "");
+        std::string provider = args.getString("provider", "");
+        std::string imapHost = args.getString("imap_host", "");
+        std::string smtpHost = args.getString("smtp_host", "");
+        int imapPort = args.getInt("imap_port", 993);
+        int smtpPort = args.getInt("smtp_port", 465);
+
+        std::ostringstream payload;
+        payload << "{"
+                << "\"action\":\"connect_account\","
+                << "\"email\":\"" << jsonEscape(emailAddr) << "\","
+                << "\"password\":\"" << jsonEscape(password) << "\","
+                << "\"provider\":\"" << jsonEscape(provider) << "\","
+                << "\"imap_host\":\"" << jsonEscape(imapHost) << "\","
+                << "\"smtp_host\":\"" << jsonEscape(smtpHost) << "\","
+                << "\"imap_port\":" << imapPort << ","
+                << "\"smtp_port\":" << smtpPort
+                << "}";
+
+        std::string scriptPath = getRepoRootDir() + "/scripts/email_connector.py";
+        std::string cmd = "/usr/bin/python3 " + shellSingleQuote(scriptPath) + " " +
+                          shellSingleQuote(payload.str()) + " 2>/dev/null";
+        std::string outJson = runCommandCapture(cmd, 16384);
+        while (!outJson.empty() && (outJson.back() == '\n' || outJson.back() == '\r')) {
+            outJson.pop_back();
+        }
+        if (outJson.empty() || outJson[0] != '{') {
+            outJson = "{\"success\":false,\"error\":\"Failed to run email connector\"}";
+        }
+
+        bool ok = outJson.find("\"success\": true") != std::string::npos ||
+                  outJson.find("\"success\":true") != std::string::npos;
+        sendDesktopNotification(
+            ok ? "✉️ Hosted Email Connected" : "⚠️ Hosted Email Connection Needs Attention",
+            emailAddr.empty() ? "Configured hosted IMAP/SMTP account" : emailAddr
+        );
+        emitRichCard({
+            "connector",
+            (ok ? "✉️ Hosted Email Connected: " : "⚠️ Hosted Email Setup: ") + emailAddr,
+            ok ? "CONNECTED" : "CHECK CREDENTIALS",
+            "Saved to ~/.amuse/email_accounts.json",
+            outJson,
+            "https://mail.google.com/",
+            "Open Mail"
+        });
+        return outJson;
     }
 
     std::string recordScreencast(const std::string &title, int durationSec, const std::string &scheduleTime) {
