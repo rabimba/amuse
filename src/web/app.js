@@ -161,18 +161,25 @@ if (connectorsBtn) {
 function renderMuseIdeasFeed() {
   const ideas = [
     {
-      title: '✨ Proactive Idea: Capture & Explain My Screen',
-      badge: 'VISION',
-      subtitle: 'Live Multimodal Desktop Grounding',
-      body: 'Take a high-res screenshot of your current desktop, stream it to Gemini Vision, and summarize what you are working on.',
-      prompt: 'Take a screenshot of my screen right now and tell me what you see.'
+      title: '✉️ Proactive Idea: Summarize Real Thunderbird & IMAP Emails',
+      badge: 'EMAIL',
+      subtitle: 'On-Device Thunderbird (32.9k Messages) + Hosted IMAP/SMTP',
+      body: 'Query your real on-device Thunderbird inbox (rkaranja@cougarnet.uh.edu, rabimba@shin.so) and connected IMAP accounts, or connect a new hosted email account.',
+      prompt: 'Can you check my real emails from Thunderbird and summarize the latest ones?'
     },
     {
-      title: '🚀 Proactive Idea: LinkedIn Launch Post',
-      badge: 'SOCIAL',
-      subtitle: 'Auto-Connect LinkedIn + Clipboard + Calendar',
-      body: 'Draft an engaging LinkedIn update, copy it to your clipboard, schedule a 9:00 AM CST reminder, and open the LinkedIn post composer.',
-      prompt: 'Draft a LinkedIn post about building our Linux personal AI agent, schedule it for 9:00 AM CST, and open the composer.'
+      title: '📸 Proactive Idea: Screenshot & Post on LinkedIn End-to-End',
+      badge: 'SOCIAL + X11',
+      subtitle: 'Auto-Screenshot + X11 Clipboard Image + Ctrl+V Composer Paste',
+      body: 'Capture a screenshot of your screen and Amuse HUD, open the LinkedIn post composer with text pre-filled, and automatically paste the screenshot image into the post.',
+      prompt: 'Take a screenshot of you and our interaction and post it on LinkedIn saying what we are able to do.'
+    },
+    {
+      title: '🌐 Proactive Idea: Playwright Browser Agent Inspection',
+      badge: 'BROWSER VM',
+      subtitle: 'Live Chromium DOM & Screenshot Automation',
+      body: 'Launch Playwright Chromium to inspect interactive buttons/inputs on a webpage and capture a full render.',
+      prompt: 'Use browser_agent_action to navigate to https://news.ycombinator.com and tell me the top stories.'
     },
     {
       title: '🎬 Proactive Idea: 5-Second Desktop Screencast',
@@ -272,6 +279,8 @@ function getToolPropIcon(toolName) {
   if (t.includes('screen') || t.includes('photo')) return '📸';
   if (t.includes('social') || t.includes('linkedin')) return '🚀';
   if (t.includes('email') || t.includes('mail')) return '✉️';
+  if (t.includes('browser') || t.includes('web')) return '🌐';
+  if (t.includes('gui') || t.includes('mouse') || t.includes('key')) return '🖱️';
   if (t.includes('memory') || t.includes('plan')) return '🧠';
   if (t.includes('custom_tool') || t.includes('computer') || t.includes('file')) return '💻';
   if (t.includes('calendar') || t.includes('reminder')) return '📅';

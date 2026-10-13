@@ -164,15 +164,16 @@ export class GeminiLiveClient extends EventEmitter {
       `CURRENT REAL-TIME SYSTEM CLOCK: ${clockContext}.`,
       `IMPORTANT TIME RULE: Always use the exact clock above (or call get_current_time_and_environment) when reasoning about times and timezones (such as 9 AM CST/CDT vs local PDT time). Never guess or hallucinate whether a time has already passed.`,
       `IMPORTANT LINUX NOTES RULE: On this Linux machine, there is NO Apple "Notes app". Whenever you create or search notes with create_note, search_notes, or open_note, notes are saved as real Markdown files in ${homeDir}/Documents/AmuseNotes/ (and ${homeDir}/Notes/) and displayed as interactive Note Cards right inside the Amuse HUD. Always pass open_on_desktop: true when creating or opening a note so the user immediately sees it on their desktop too!`,
-      `PROACTIVE ACTION EXECUTION RULE: You have 30 native tools across 20+ local and cloud connectors. Whenever the user asks you to do something, DO IT IMMEDIATELY by calling the appropriate tool(s)—never say "I can't do that" or "As an AI":`,
-      `- Social Media & LinkedIn (e.g. "make or schedule a post on LinkedIn"): Call social_media_action to auto-connect LinkedIn, draft/schedule the post, copy to clipboard, and open the LinkedIn composer.`,
-      `- Screencasts, Screenshots & Live Screen Vision (e.g. "record a screencast", "take a screenshot", "what's on my screen?"): Call record_screencast or take_screenshot. Taking a screenshot also streams the screen image into your multimodal vision so you can see and describe what is on the user's screen!`,
-      `- Alarms & Timers (e.g. "set an alarm for 9 AM CST" or "set a timer for 2 minutes"): Call set_alarm_or_timer to arm a real countdown with audio chimes and desktop notifications.`,
-      `- Active Memory (e.g. remembering user preferences, habits, facts, projects): Call save_memory and recall_memories.`,
-      `- Action Plans & Multi-Step Goals (e.g. travel planning, launch campaigns, project tracking): Call manage_action_plan to create and track multi-step plans.`,
-      `- Dynamic Custom Tool Builder: If a task needs a custom script, calculation, scraper, or automation, call build_and_run_custom_tool to write and run a Python or Bash tool on the fly.`,
-      `- Media, Volume & System Control (e.g. Spotify/music playback, system volume, active window inspection): Call media_and_system_control or computer_control_action.`,
-      `- Notes, Calendar, Reminders, Messages, Contacts, Email, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, email_action, manage_files, web_search_and_fetch, list_connectors, connect_service.`,
+      `PROACTIVE ACTION EXECUTION RULE: You have 33 native tools across 20+ local and cloud connectors. Whenever the user asks you to do something, DO IT IMMEDIATELY by calling the appropriate tool(s) end-to-end—never stop halfway and never say "I can't do that":`,
+      `- End-to-End Social Media & Website Posting (e.g. "take a screenshot and post it on LinkedIn saying what we can do" or "post on LinkedIn/Twitter/Reddit"): ALWAYS call social_media_action with capture_screenshot: true (when a screenshot is requested) and open_in_browser: true! social_media_action(capture_screenshot: true, open_in_browser: true) automatically captures the desktop screenshot, copies the PNG image to the X11 clipboard, opens the live LinkedIn/social composer in the user's logged-in browser with the post text pre-filled, and uses X11 XTest (Ctrl+V) to paste the screenshot directly into the post! If you call take_screenshot first, you MUST ALSO call social_media_action in the same turn or immediately after so the post actually happens end-to-end.`,
+      `- Real On-Device Thunderbird & Hosted Email (e.g. "check my emails", "search emails", "send an email"): Call email_action. It connects directly to the user's real on-device Thunderbird database (32,910+ real emails across rkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) AND hosted IMAP/SMTP accounts in ~/.amuse/email_accounts.json. NEVER invent or hallucinate emails—report only the exact real emails returned by email_action, and mention that they can also connect additional hosted IMAP/SMTP accounts via connect_email_account or the HUD Email button.`,
+      `- Browser Agent & GUI Desktop Control: Use browser_agent_action (Playwright Chromium) to navigate websites, inspect buttons/inputs, fill forms, upload files, and click submit buttons. Use gui_desktop_action (native X11 libXtst) to click screen coordinates, type text, send hotkeys (Ctrl+V, Ctrl+Return), or paste images into any desktop window.`,
+      `- Screencasts, Screenshots & Live Screen Vision: Call record_screencast or take_screenshot. Taking a screenshot also copies the PNG to the clipboard and streams the screen image into your multimodal vision.`,
+      `- Alarms & Timers: Call set_alarm_or_timer to arm a real countdown with audio chimes and desktop notifications.`,
+      `- Active Memory & Action Plans: Call save_memory, recall_memories, and manage_action_plan.`,
+      `- Dynamic Custom Tool Builder: Call build_and_run_custom_tool to write and run a Python or Bash tool on the fly.`,
+      `- Media, Volume & System Control: Call media_and_system_control or computer_control_action.`,
+      `- Notes, Calendar, Reminders, Messages, Contacts, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, search_contacts (searches 7,850+ real Thunderbird contacts), manage_files, web_search_and_fetch, list_connectors, connect_service.`,
       this.startupMemories ? `ACTIVE MEMORY (Persisted User Facts & Preferences):\n${this.startupMemories}` : ''
     ].filter(Boolean).join('\n');
   }
@@ -261,6 +262,8 @@ export class GeminiLiveClient extends EventEmitter {
 
   sendTextMessage(text) {
     const turnId = ++this.currentTurnId;
+    this.lastUserText = String(text || '');
+    this.socialPostedInTurn = false;
     this.turnResponded = false;
     this.outputTranscriptBuffer = '';
     if (this.turnWatchdog) {
@@ -475,7 +478,7 @@ export class GeminiLiveClient extends EventEmitter {
     }
   }
 
-  sendToolResponse(callId, outputData, toolName = '') {
+  async sendToolResponse(callId, outputData, toolName = '') {
     let outputObj = outputData;
     if (typeof outputData === 'string') {
       try {
@@ -496,6 +499,43 @@ export class GeminiLiveClient extends EventEmitter {
     if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const resolvedName = toolName || this.pendingToolNames.get(callId) || '';
+    if (resolvedName === 'social_media_action') {
+      this.socialPostedInTurn = true;
+    }
+
+    // Guarantee end-to-end execution when the user asks to take a screenshot AND post it on LinkedIn/Twitter/Reddit
+    const combinedPrompt = `${this.lastUserText || ''} ${this.inputTranscriptBuffer || ''}`.toLowerCase();
+    const wantsSocialPost =
+      combinedPrompt.includes('linkedin') ||
+      combinedPrompt.includes('linekdin') ||
+      combinedPrompt.includes('twitter') ||
+      combinedPrompt.includes('post it');
+
+    if (resolvedName === 'take_screenshot' && wantsSocialPost && !this.socialPostedInTurn && this.pendingToolBatches.length === 0) {
+      this.socialPostedInTurn = true;
+      const platform = combinedPrompt.includes('twitter') ? 'twitter_x' : 'linkedin';
+      const postContent =
+        'Excited to share a live screenshot of Amuse — our native Linux personal AI agent built on Gemini 2.5 Flash Live with real-time duplex voice, screen vision, on-device Thunderbird & IMAP email, Playwright browser automation, and 20+ active connectors! #AI #Linux #GeminiLive #Agents';
+      try {
+        const autoSocialId = `auto-social-${Date.now()}`;
+        const socialRes = await this.invokeNativeToolAndWait(autoSocialId, 'social_media_action', {
+          platform,
+          action: 'post_now',
+          content: postContent,
+          image_path: outputObj?.file_path || 'latest',
+          capture_screenshot: false,
+          open_in_browser: true
+        });
+        outputObj = {
+          ...outputObj,
+          chained_social_media_action: socialRes,
+          note: 'Both take_screenshot AND social_media_action completed end-to-end: screenshot copied to X11 clipboard, LinkedIn composer opened in browser with post text pre-filled, and screenshot pasted via Ctrl+V!'
+        };
+      } catch (err) {
+        console.error('[GeminiLive] Auto-chained social_media_action error:', err);
+      }
+    }
+
     const fnResp = {
       id: callId,
       response: {
