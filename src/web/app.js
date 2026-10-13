@@ -201,7 +201,7 @@ function renderMuseIdeasFeed() {
       <div class="card-subtitle">${escapeHtml(idea.subtitle)}</div>
       <div class="card-body">${escapeHtml(idea.body)}</div>
       <div class="card-actions">
-        <button class="card-action-btn">Run with Muse →</button>
+        <button class="card-action-btn">Run with Amuse →</button>
       </div>
     `;
     el.querySelector('.card-action-btn').addEventListener('click', () => {
@@ -323,7 +323,7 @@ window.appendRichCard = function(card) {
 
   el.innerHTML = `
     <div class="card-header">
-      <span class="card-title">${escapeHtml(card.title || 'Muse')}</span>
+      <span class="card-title">${escapeHtml(card.title || 'Amuse')}</span>
       ${badge}
     </div>
     ${subtitle}
@@ -354,13 +354,13 @@ window.setAgentStatus = function(state, details) {
       updateMicUI(true);
       break;
     case 'thinking':
-      statusText.textContent = 'Muse is working...';
+      statusText.textContent = 'Amuse is working...';
       if (details && avatarPropBadge) {
         avatarPropBadge.textContent = getToolPropIcon(details);
       }
       break;
     case 'speaking':
-      statusText.textContent = 'Muse is speaking...';
+      statusText.textContent = 'Amuse is speaking...';
       if (avatarPropBadge) avatarPropBadge.textContent = '🔊';
       break;
     case 'idle':

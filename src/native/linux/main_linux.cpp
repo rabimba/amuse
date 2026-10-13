@@ -3613,7 +3613,7 @@ private:
 
     void setupHUDWindow() {
         window_ = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_title(GTK_WINDOW(window_), "Muse HUD");
+        gtk_window_set_title(GTK_WINDOW(window_), "Amuse HUD");
         gtk_window_set_default_size(GTK_WINDOW(window_), 520, 700);
         gtk_window_set_decorated(GTK_WINDOW(window_), FALSE);
         gtk_window_set_keep_above(GTK_WINDOW(window_), TRUE);
