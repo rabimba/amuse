@@ -7,6 +7,7 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XInput2.h>
+#include <X11/extensions/XTest.h>
 
 #include <algorithm>
 #include <atomic>
@@ -236,24 +237,148 @@ static void openOnDesktop(const std::string &pathOrUrl) {
 }
 
 static void copyToClipboard(const std::string &text) {
-    std::string *heapText = new std::string(text);
-    g_idle_add_full(
-        G_PRIORITY_DEFAULT,
-        +[](gpointer data) -> gboolean {
-            std::string *s = static_cast<std::string *>(data);
-            if (gdk_display_get_default()) {
-                GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-                if (cb) {
-                    gtk_clipboard_set_text(cb, s->c_str(), static_cast<gint>(s->size()));
-                    gtk_clipboard_store(cb);
+    if (gtk_main_level() > 0) {
+        std::string *heapText = new std::string(text);
+        g_idle_add_full(
+            G_PRIORITY_DEFAULT,
+            +[](gpointer data) -> gboolean {
+                std::string *s = static_cast<std::string *>(data);
+                if (gdk_display_get_default()) {
+                    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+                    if (cb) {
+                        gtk_clipboard_set_text(cb, s->c_str(), static_cast<gint>(s->size()));
+                        gtk_clipboard_store(cb);
+                    }
                 }
-            }
-            delete s;
-            return G_SOURCE_REMOVE;
-        },
-        heapText,
-        nullptr
-    );
+                delete s;
+                return G_SOURCE_REMOVE;
+            },
+            heapText,
+            nullptr
+        );
+    } else {
+        std::string py = "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk, Gdk, GLib; "
+                         "cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); "
+                         "cb.set_text(" + std::string("'''") + text + "'''" + ", -1); cb.store(); "
+                         "GLib.timeout_add(4000, Gtk.main_quit); Gtk.main()";
+        spawnDetachedProcess({"/usr/bin/python3", "-c", py});
+    }
+}
+
+static void copyImageToClipboard(const std::string &pngPath) {
+    if (pngPath.empty()) return;
+    if (gtk_main_level() > 0) {
+        std::string *heapPath = new std::string(pngPath);
+        g_idle_add_full(
+            G_PRIORITY_DEFAULT,
+            +[](gpointer data) -> gboolean {
+                std::string *p = static_cast<std::string *>(data);
+                if (gdk_display_get_default()) {
+                    GError *err = nullptr;
+                    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(p->c_str(), &err);
+                    if (pixbuf) {
+                        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+                        if (cb) {
+                            gtk_clipboard_set_image(cb, pixbuf);
+                            gtk_clipboard_store(cb);
+                        }
+                        g_object_unref(pixbuf);
+                    }
+                    if (err) g_error_free(err);
+                }
+                delete p;
+                return G_SOURCE_REMOVE;
+            },
+            heapPath,
+            nullptr
+        );
+    } else {
+        std::string py = "import gi, sys; gi.require_version('Gtk', '3.0'); "
+                         "from gi.repository import Gtk, Gdk, GdkPixbuf, GLib; "
+                         "pb = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1]); "
+                         "cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); "
+                         "cb.set_image(pb); cb.store(); "
+                         "GLib.timeout_add(12000, Gtk.main_quit); Gtk.main()";
+        spawnDetachedProcess({"/usr/bin/python3", "-c", py, pngPath});
+    }
+}
+
+static bool x11MoveAndClick(int x, int y, int button = 1, bool doClick = true) {
+    Display *dpy = XOpenDisplay(nullptr);
+    if (!dpy) return false;
+    XTestFakeMotionEvent(dpy, -1, x, y, CurrentTime);
+    XFlush(dpy);
+    if (doClick) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        XTestFakeButtonEvent(dpy, static_cast<unsigned int>(button), True, CurrentTime);
+        XFlush(dpy);
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        XTestFakeButtonEvent(dpy, static_cast<unsigned int>(button), False, CurrentTime);
+        XFlush(dpy);
+    }
+    XCloseDisplay(dpy);
+    return true;
+}
+
+static bool x11SendKeyCombo(const std::string &comboStr) {
+    Display *dpy = XOpenDisplay(nullptr);
+    if (!dpy) return false;
+
+    std::string lower = comboStr;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    bool useCtrl = (lower.find("ctrl") != std::string::npos || lower.find("control") != std::string::npos);
+    bool useShift = (lower.find("shift") != std::string::npos);
+    bool useAlt = (lower.find("alt") != std::string::npos);
+    bool useSuper = (lower.find("super") != std::string::npos || lower.find("meta") != std::string::npos);
+
+    KeySym mainSym = XK_VoidSymbol;
+    if (lower.find("return") != std::string::npos || lower.find("enter") != std::string::npos) mainSym = XK_Return;
+    else if (lower.find("tab") != std::string::npos) mainSym = XK_Tab;
+    else if (lower.find("esc") != std::string::npos) mainSym = XK_Escape;
+    else if (lower.find("space") != std::string::npos) mainSym = XK_space;
+    else if (lower.find("backspace") != std::string::npos) mainSym = XK_BackSpace;
+    else {
+        size_t plus = comboStr.rfind('+');
+        std::string keyPart = (plus != std::string::npos) ? comboStr.substr(plus + 1) : comboStr;
+        while (!keyPart.empty() && keyPart.front() == ' ') keyPart.erase(0, 1);
+        if (keyPart.size() == 1) {
+            char c = static_cast<char>(std::tolower(static_cast<unsigned char>(keyPart[0])));
+            mainSym = XStringToKeysym(std::string(1, c).c_str());
+        } else {
+            mainSym = XStringToKeysym(keyPart.c_str());
+        }
+    }
+
+    KeyCode ctrlCode = useCtrl ? XKeysymToKeycode(dpy, XK_Control_L) : 0;
+    KeyCode shiftCode = useShift ? XKeysymToKeycode(dpy, XK_Shift_L) : 0;
+    KeyCode altCode = useAlt ? XKeysymToKeycode(dpy, XK_Alt_L) : 0;
+    KeyCode superCode = useSuper ? XKeysymToKeycode(dpy, XK_Super_L) : 0;
+    KeyCode mainCode = (mainSym != XK_VoidSymbol) ? XKeysymToKeycode(dpy, mainSym) : 0;
+
+    if (ctrlCode) XTestFakeKeyEvent(dpy, ctrlCode, True, CurrentTime);
+    if (shiftCode) XTestFakeKeyEvent(dpy, shiftCode, True, CurrentTime);
+    if (altCode) XTestFakeKeyEvent(dpy, altCode, True, CurrentTime);
+    if (superCode) XTestFakeKeyEvent(dpy, superCode, True, CurrentTime);
+    XFlush(dpy);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+    if (mainCode) {
+        XTestFakeKeyEvent(dpy, mainCode, True, CurrentTime);
+        XFlush(dpy);
+        std::this_thread::sleep_for(std::chrono::milliseconds(35));
+        XTestFakeKeyEvent(dpy, mainCode, False, CurrentTime);
+        XFlush(dpy);
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    if (superCode) XTestFakeKeyEvent(dpy, superCode, False, CurrentTime);
+    if (altCode) XTestFakeKeyEvent(dpy, altCode, False, CurrentTime);
+    if (shiftCode) XTestFakeKeyEvent(dpy, shiftCode, False, CurrentTime);
+    if (ctrlCode) XTestFakeKeyEvent(dpy, ctrlCode, False, CurrentTime);
+    XFlush(dpy);
+    XCloseDisplay(dpy);
+    return mainCode != 0;
 }
 
 static std::string runCommandCapture(const std::string &cmd, int maxBytes = 16384) {
@@ -974,21 +1099,33 @@ public:
   },
   {
     "name": "social_media_action",
-    "description": "Auto-connects to LinkedIn or social media platforms to draft, schedule, or publish a post. Copies post text to clipboard, saves draft, schedules reminder/alarm if schedule_time is provided, and can open the LinkedIn post composer in the browser.",
+    "description": "End-to-end social media & website posting connector (LinkedIn, X/Twitter, Reddit, Facebook, HackerNews, or custom URL). Automatically captures/attaches a desktop screenshot when requested (capture_screenshot=true or image_path), copies the screenshot PNG image or post text to the X11 clipboard, opens the live composer in the user's logged-in browser with the post text pre-populated, and uses X11 XTest keyboard automation to paste the attached screenshot (Ctrl+V) and optionally submit (Ctrl+Enter).",
     "parameters": {
       "type": "OBJECT",
       "properties": {
         "platform": {
           "type": "STRING",
-          "description": "Social platform: 'linkedin' (default), 'twitter_x', 'facebook'"
+          "description": "Social platform or website: 'linkedin' (default), 'twitter_x', 'reddit', 'facebook', 'hackernews'"
         },
         "action": {
           "type": "STRING",
-          "description": "Action: 'schedule', 'draft', or 'open_composer'"
+          "description": "Action: 'post_now' (default), 'open_composer', 'schedule', or 'draft'"
         },
         "content": {
           "type": "STRING",
-          "description": "Post text or topic content"
+          "description": "Full post text to publish"
+        },
+        "capture_screenshot": {
+          "type": "BOOLEAN",
+          "description": "If true, captures a desktop screenshot (or attaches the just-captured screenshot) and pastes the PNG image directly into the post composer via X11 clipboard + Ctrl+V"
+        },
+        "image_path": {
+          "type": "STRING",
+          "description": "Optional path to an image/screenshot to attach (or 'latest' to attach the latest screenshot)"
+        },
+        "auto_submit": {
+          "type": "BOOLEAN",
+          "description": "If true, also sends Ctrl+Enter via X11 XTest after pasting to submit the post automatically"
         },
         "schedule_time": {
           "type": "STRING",
@@ -996,7 +1133,7 @@ public:
         },
         "open_in_browser": {
           "type": "BOOLEAN",
-          "description": "If true, opens LinkedIn/platform post composer in the browser now"
+          "description": "Whether to open the live post composer in the browser immediately (default true)"
         }
       },
       "required": ["content"]
@@ -1288,6 +1425,62 @@ public:
       },
       "required": ["action"]
     }
+  },
+  {
+    "name": "browser_agent_action",
+    "description": "Muse Browser VM & Playwright Web Agent: Navigates to any URL in a real Chromium browser, extracts interactive buttons/inputs/text, fills web forms, uploads files, clicks buttons, and captures webpage screenshots.",
+    "parameters": {
+      "type": "OBJECT",
+      "properties": {
+        "action": {
+          "type": "STRING",
+          "description": "'navigate_and_extract', 'fill_and_submit', or 'screenshot_url'"
+        },
+        "url": {
+          "type": "STRING",
+          "description": "Target webpage URL"
+        },
+        "fields": {
+          "type": "STRING",
+          "description": "Optional JSON object mapping CSS selectors/labels/placeholders to values for 'fill_and_submit'"
+        },
+        "submit_selector": {
+          "type": "STRING",
+          "description": "Optional button selector or button text to click after filling"
+        },
+        "file_path": {
+          "type": "STRING",
+          "description": "Optional file path to upload into a file input"
+        }
+      },
+      "required": ["action", "url"]
+    }
+  },
+  {
+    "name": "gui_desktop_action",
+    "description": "Native X11 GUI Desktop Control (libXtst): Moves mouse, clicks coordinates, sends keyboard shortcuts (e.g. 'Ctrl+V', 'Ctrl+Return', 'Alt+Tab'), types text into the active window, or copies an image file to clipboard and pastes it via Ctrl+V.",
+    "parameters": {
+      "type": "OBJECT",
+      "properties": {
+        "action": {
+          "type": "STRING",
+          "description": "'click', 'move_mouse', 'hotkey', 'type_text', or 'paste_image'"
+        },
+        "x": {
+          "type": "INTEGER",
+          "description": "X screen coordinate for click or move_mouse"
+        },
+        "y": {
+          "type": "INTEGER",
+          "description": "Y screen coordinate for click or move_mouse"
+        },
+        "text_or_key": {
+          "type": "STRING",
+          "description": "Key combo (e.g. 'Ctrl+V', 'Ctrl+Return'), text to type, or image file path for 'paste_image'"
+        }
+      },
+      "required": ["action"]
+    }
   }
 ])JSON";
     }
@@ -1387,12 +1580,16 @@ public:
         } else if (toolName == "social_media_action") {
             std::string platform = args.getString("platform", "linkedin");
             autoConnect(platform);
+            std::string schedTime = args.getString("schedule_time", "");
             return socialMediaAction(
                 platform,
-                args.getString("action", "schedule"),
+                args.getString("action", schedTime.empty() ? "post_now" : "schedule"),
                 args.getString("content", ""),
-                args.getString("schedule_time", ""),
-                args.getBool("open_in_browser", false)
+                schedTime,
+                args.getBool("open_in_browser", schedTime.empty()),
+                args.getBool("capture_screenshot", false),
+                args.getString("image_path", ""),
+                args.getBool("auto_submit", false)
             );
         } else if (toolName == "email_action") {
             autoConnect("gmail");
@@ -1466,6 +1663,12 @@ public:
         } else if (toolName == "media_and_system_control") {
             autoConnect("computer_control");
             return mediaAndSystemControl(args.getString("action", "active_window_info"));
+        } else if (toolName == "browser_agent_action") {
+            autoConnect("web_browser");
+            return browserAgentAction(argsJson);
+        } else if (toolName == "gui_desktop_action") {
+            autoConnect("computer_control");
+            return guiDesktopAction(argsJson);
         }
 
         return "{\"error\":\"Unknown tool: " + jsonEscape(toolName) + "\"}";
@@ -1564,6 +1767,8 @@ private:
     std::mutex cbMutex_;
     RichCardCallback richCardCb_;
     ImageFrameCallback imageFrameCb_;
+    std::string lastScreenshotPath_;
+    time_t lastScreenshotTime_ = 0;
 
     LocalConnectorsManager() = default;
     ~LocalConnectorsManager() {
@@ -2696,10 +2901,32 @@ private:
 
     std::string socialMediaAction(const std::string &platform, const std::string &action,
                                   const std::string &content, const std::string &scheduleTime,
-                                  bool openInBrowser) {
+                                  bool openInBrowser, bool captureScreenshot = false,
+                                  const std::string &imagePath = "", bool autoSubmit = false) {
         std::string id = "post-" + std::to_string(std::time(nullptr));
         std::string nowStr = currentReadableTimestamp();
-        std::string status = scheduleTime.empty() ? "ready" : "scheduled";
+        std::string status = scheduleTime.empty() ? "published_to_composer" : "scheduled";
+
+        // Determine if a screenshot should be attached
+        std::string attachedImage;
+        time_t nowEpoch = std::time(nullptr);
+        if (!imagePath.empty() && imagePath != "latest") {
+            std::string expanded = expandTilde(imagePath);
+            struct stat st{};
+            if (stat(expanded.c_str(), &st) == 0 && st.st_size > 0) {
+                attachedImage = expanded;
+            }
+        }
+        if (attachedImage.empty() && !lastScreenshotPath_.empty() && (nowEpoch - lastScreenshotTime_) <= 120) {
+            struct stat st{};
+            if (stat(lastScreenshotPath_.c_str(), &st) == 0 && st.st_size > 0) {
+                attachedImage = lastScreenshotPath_;
+            }
+        }
+        if (attachedImage.empty() && (captureScreenshot || imagePath == "latest")) {
+            takeScreenshot("Social_Post_Screenshot", false);
+            attachedImage = lastScreenshotPath_;
+        }
 
         const char *sql =
             "INSERT INTO social_posts (id, platform, action, content, schedule_time, status, created_at) "
@@ -2717,13 +2944,24 @@ private:
             sqlite3_finalize(stmt);
         }
 
-        // Save as Markdown note draft as well & copy to clipboard
+        // Save as Markdown note draft as well
         std::string draftPath = writeNoteMarkdownFile("LinkedIn_Post_Draft", nowStr, content);
-        copyToClipboard(content);
+        if (!attachedImage.empty()) {
+            copyImageToClipboard(attachedImage);
+        } else {
+            copyToClipboard(content);
+        }
 
+        std::string lowerPlat = platform;
+        std::transform(lowerPlat.begin(), lowerPlat.end(), lowerPlat.begin(), ::tolower);
         std::string shareUrl = "https://www.linkedin.com/feed/?shareActive=true&text=" + urlEncode(content);
-        if (platform == "twitter_x") {
+        if (lowerPlat.find("twitter") != std::string::npos || lowerPlat == "x" || lowerPlat == "twitter_x") {
             shareUrl = "https://twitter.com/intent/tweet?text=" + urlEncode(content);
+        } else if (lowerPlat.find("reddit") != std::string::npos) {
+            shareUrl = "https://www.reddit.com/submit?selftext=true&title=" + urlEncode(content.substr(0, 120)) +
+                       "&text=" + urlEncode(content);
+        } else if (lowerPlat.find("hackernews") != std::string::npos || lowerPlat == "hn") {
+            shareUrl = "https://news.ycombinator.com/submitlink?t=" + urlEncode(content.substr(0, 80));
         }
 
         std::string scheduledTarget;
@@ -2735,23 +2973,49 @@ private:
             createCalendarEvent("Publish " + platform + " Post", scheduledTarget, "", shareUrl, content);
         }
 
-        if (openInBrowser || action == "open_composer") {
+        bool launchedBrowser = false;
+        if (scheduleTime.empty() && (openInBrowser || action == "post_now" || action == "open_composer")) {
             openOnDesktop(shareUrl);
+            launchedBrowser = true;
+
+            if (!attachedImage.empty() || autoSubmit) {
+                std::thread([attachedImage, autoSubmit, platform]() {
+                    // Wait for browser tab & LinkedIn/Twitter composer modal to finish opening and focusing
+                    std::this_thread::sleep_for(std::chrono::milliseconds(4500));
+                    if (!attachedImage.empty()) {
+                        copyImageToClipboard(attachedImage);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                        x11SendKeyCombo("Ctrl+v");
+                        sendDesktopNotification(
+                            "📸 Screenshot Pasted into " + platform,
+                            "Attached " + attachedImage + " via X11 clipboard + Ctrl+V"
+                        );
+                    }
+                    if (autoSubmit) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+                        x11SendKeyCombo("Ctrl+Return");
+                    }
+                }).detach();
+            }
         }
 
         sendDesktopNotification(
-            "🚀 " + platform + " Post " + (scheduleTime.empty() ? "Prepared" : "Scheduled"),
-            scheduleTime.empty() ? "Copied to clipboard & saved draft" : ("Scheduled for " + scheduledTarget)
+            "🚀 " + platform + " Post " + (scheduleTime.empty() ? "Launched in Browser" : "Scheduled"),
+            !attachedImage.empty()
+                ? ("Text pre-filled & pasting screenshot: " + attachedImage)
+                : (scheduleTime.empty() ? "Opened live composer & copied to clipboard" : ("Scheduled for " + scheduledTarget))
         );
 
         emitRichCard({
             "connector",
             "🚀 " + platform + " Post (" + status + ")",
             platform,
-            scheduleTime.empty() ? ("Saved to " + draftPath) : ("Scheduled for " + scheduledTarget),
-            content,
+            !attachedImage.empty()
+                ? ("Screenshot Attached: " + attachedImage)
+                : (scheduleTime.empty() ? ("Saved to " + draftPath) : ("Scheduled for " + scheduledTarget)),
+            content + (!attachedImage.empty() ? ("\n\n📸 Attached Screenshot: " + attachedImage) : ""),
             shareUrl,
-            "Open LinkedIn Composer"
+            "Open " + platform + " Composer"
         });
 
         std::ostringstream out;
@@ -2760,6 +3024,10 @@ private:
             << "\"post_id\":\"" << jsonEscape(id) << "\","
             << "\"platform\":\"" << jsonEscape(platform) << "\","
             << "\"status\":\"" << jsonEscape(status) << "\","
+            << "\"launched_browser_composer\":" << (launchedBrowser ? "true" : "false") << ","
+            << "\"attached_screenshot_path\":\"" << jsonEscape(attachedImage) << "\","
+            << "\"auto_paste_screenshot_via_x11\":" << (!attachedImage.empty() ? "true" : "false") << ","
+            << "\"auto_submit\":" << (autoSubmit ? "true" : "false") << ","
             << "\"scheduled_for\":\"" << jsonEscape(scheduledTarget) << "\","
             << "\"seconds_until_scheduled\":" << secondsUntil << ","
             << "\"copied_to_clipboard\":true,"
@@ -2948,21 +3216,30 @@ private:
         struct stat st{};
         bool ok = (stat(filePath.c_str(), &st) == 0 && st.st_size > 0);
         if (ok) {
-            // Read PNG and stream into Gemini Multimodal Live Vision!
-            std::ifstream ifs(filePath, std::ios::binary);
-            if (ifs.is_open()) {
-                std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-                if (!bytes.empty()) {
-                    emitImageFrame(base64Encode(bytes.data(), bytes.size()), "image/png");
+            lastScreenshotPath_ = filePath;
+            lastScreenshotTime_ = std::time(nullptr);
+            copyImageToClipboard(filePath);
+
+            // Stream PNG into Gemini Multimodal Live Vision 400ms AFTER returning tool_call_response
+            // so realtimeInput.mediaChunks never interrupts multi-tool chains (e.g. take_screenshot -> social_media_action)
+            std::thread([this, filePath]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                std::ifstream ifs(filePath, std::ios::binary);
+                if (ifs.is_open()) {
+                    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                    if (!bytes.empty()) {
+                        emitImageFrame(base64Encode(bytes.data(), bytes.size()), "image/png");
+                    }
                 }
-            }
-            sendDesktopNotification("📸 Screenshot & Vision Shared", "Saved to " + filePath + " & streamed to Gemini Vision");
+            }).detach();
+
+            sendDesktopNotification("📸 Screenshot Captured & Copied", "Saved to " + filePath + " & copied to clipboard");
             emitRichCard({
                 "media",
                 "📸 Screen Vision Shared: " + title,
                 "LIVE VISION",
                 filePath,
-                "Captured desktop screen (" + std::to_string(st.st_size / 1024) + " KB) and streamed to Gemini Multimodal Live.",
+                "Captured desktop screen (" + std::to_string(st.st_size / 1024) + " KB), copied image to X11 clipboard, and streamed to Gemini Multimodal Live.",
                 filePath,
                 "Open Screenshot"
             });
@@ -2975,6 +3252,7 @@ private:
         out << "{"
             << "\"success\":" << (ok ? "true" : "false") << ","
             << "\"file_path\":\"" << jsonEscape(filePath) << "\","
+            << "\"copied_image_to_clipboard\":" << (ok ? "true" : "false") << ","
             << "\"streamed_to_gemini_vision\":true,"
             << "\"active_window\":\"" << jsonEscape(activeWin) << "\","
             << "\"size_bytes\":" << (ok ? st.st_size : 0)
@@ -3377,6 +3655,100 @@ private:
             out = runCommandCapture("xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk '{print $NF}' | xargs -I{} xprop -id {} WM_NAME WM_CLASS 2>/dev/null", 1024);
         }
         return "{\"success\":true,\"action\":\"" + jsonEscape(action) + "\",\"result\":\"" + jsonEscape(out) + "\"}";
+    }
+
+    std::string browserAgentAction(const std::string &argsJson) {
+        JsonHelper args(argsJson);
+        std::string action = args.getString("action", "navigate_and_extract");
+        std::string url = args.getString("url", "");
+        std::string scriptPath = getRepoRootDir() + "/scripts/browser_agent.py";
+        std::string pyBin = getHomeDir() + "/.pyenv/shims/python3";
+        struct stat st{};
+        if (stat(pyBin.c_str(), &st) != 0) pyBin = "/usr/bin/python3";
+
+        std::string cmd = shellSingleQuote(pyBin) + " " + shellSingleQuote(scriptPath) + " " +
+                          shellSingleQuote(argsJson.empty() ? "{\"action\":\"navigate_and_extract\"}" : argsJson) + " 2>/dev/null";
+        std::string outJson = runCommandCapture(cmd, 32768);
+        while (!outJson.empty() && (outJson.back() == '\n' || outJson.back() == '\r')) outJson.pop_back();
+        if (outJson.empty() || outJson[0] != '{') {
+            outJson = "{\"success\":false,\"error\":\"Browser agent failed\"}";
+        }
+
+        JsonHelper parsed(outJson);
+        std::string shotPath = parsed.getString("screenshot_path", "");
+        std::string title = parsed.getString("title", url);
+        if (!shotPath.empty()) {
+            emitRichCard({
+                "media",
+                "🌐 Browser Agent: " + title,
+                action,
+                shotPath,
+                "Automated browser action (" + action + ") on " + url,
+                shotPath,
+                "View Page Capture"
+            });
+        } else {
+            emitRichCard({
+                "connector",
+                "🌐 Browser Agent: " + title,
+                action,
+                url,
+                "Executed browser action (" + action + ") on " + url,
+                url,
+                "Open URL"
+            });
+        }
+        return outJson;
+    }
+
+    std::string guiDesktopAction(const std::string &argsJson) {
+        JsonHelper args(argsJson);
+        std::string action = args.getString("action", "hotkey");
+        int x = args.getInt("x", 640);
+        int y = args.getInt("y", 400);
+        std::string textOrKey = args.getString("text_or_key", "");
+        bool ok = false;
+        std::string detail;
+
+        if (action == "click") {
+            ok = x11MoveAndClick(x, y, 1, true);
+            detail = "Clicked left mouse button at (" + std::to_string(x) + ", " + std::to_string(y) + ")";
+        } else if (action == "move_mouse") {
+            ok = x11MoveAndClick(x, y, 1, false);
+            detail = "Moved mouse cursor to (" + std::to_string(x) + ", " + std::to_string(y) + ")";
+        } else if (action == "hotkey") {
+            ok = x11SendKeyCombo(textOrKey.empty() ? "Return" : textOrKey);
+            detail = "Sent X11 key combo: " + textOrKey;
+        } else if (action == "type_text") {
+            copyToClipboard(textOrKey);
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            ok = x11SendKeyCombo("Ctrl+v");
+            detail = "Copied & pasted text into active window (" + std::to_string(textOrKey.size()) + " chars)";
+        } else if (action == "paste_image") {
+            std::string imgPath = textOrKey.empty() ? lastScreenshotPath_ : expandTilde(textOrKey);
+            copyImageToClipboard(imgPath);
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            ok = x11SendKeyCombo("Ctrl+v");
+            detail = "Copied PNG image to X11 clipboard and pasted via Ctrl+V: " + imgPath;
+        }
+
+        emitRichCard({
+            "connector",
+            "🖱️ GUI Desktop Action: " + action,
+            ok ? "EXECUTED" : "ERROR",
+            "X11 libXtst Desktop Automation",
+            detail,
+            "",
+            ""
+        });
+
+        std::ostringstream out;
+        out << "{"
+            << "\"success\":" << (ok ? "true" : "false") << ","
+            << "\"action\":\"" << jsonEscape(action) << "\","
+            << "\"detail\":\"" << jsonEscape(detail) << "\""
+            << "}";
+        return out.str();
     }
 };
 

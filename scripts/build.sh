@@ -33,7 +33,7 @@ if [ "$OS_NAME" = "Darwin" ]; then
 elif [ "$OS_NAME" = "Linux" ]; then
   g++ -O2 -std=c++17 \
     src/native/linux/main_linux.cpp \
-    $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 libpulse-simple sqlite3 x11 xi) \
+    $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1 javascriptcoregtk-4.1 libpulse-simple sqlite3 x11 xi xtst) \
     -lpthread \
     -o bin/amuse-bridge
 else
