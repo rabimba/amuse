@@ -79,14 +79,19 @@ case "$COMMAND" in
     echo ""
     echo "All local connector bridges executed successfully!"
     ;;
+  e2e|all)
+    shift || true
+    exec bash "$DIR/run.sh" "$@"
+    ;;
   help|--help|-h)
-    echo "Amuse - Personal AI Agent for macOS powered by Gemini"
+    echo "Amuse - Personal AI Agent powered by Gemini"
     echo ""
     echo "Usage:"
-    echo "  amuse [start|gui]            Launch ambient floating HUD (Double-tap Option to toggle)"
+    echo "  amuse [start|gui]            Launch ambient floating HUD (Double-tap Option/Alt to toggle)"
+    echo "  amuse e2e                    Run the complete end-to-end build, test, and live HUD pipeline"
     echo "  amuse config --key <KEY>     Set your Google AI Studio Gemini API Key"
     echo "  amuse config --voice <VOICE> Set Gemini Live voice (Puck, Charon, Kore, Fenrir, Aoede)"
-    echo "  amuse test                   Run diagnostics on local Apple connectors"
+    echo "  amuse test                   Run diagnostics on local connectors"
     echo "  amuse tools                  List Gemini tool declarations"
     echo "  amuse call <name> [json]     Directly invoke a local connector tool"
     echo ""

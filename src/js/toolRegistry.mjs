@@ -26,3 +26,15 @@ export function executeNativeTool(toolName, args) {
     return { error: err.message };
   }
 }
+
+export function getStartupMemories() {
+  try {
+    const res = executeNativeTool('recall_memories', {});
+    if (res && Array.isArray(res.memories)) {
+      return res.memories.map((m) => `- [${m.category || 'general'}] ${m.key}: ${m.value}`).join('\n');
+    }
+  } catch {
+    // ignore if bridge not built yet
+  }
+  return '';
+}

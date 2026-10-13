@@ -2,12 +2,17 @@
   "name": "amuse",
   "version": "1.0.0",
   "description": "**Amuse** is a personal AI agent for macOS powered by the **Google Gemini Multimodal Live API** through **Google AI Studio**.",
-  "main": "index.js",
+  "main": "src/js/index.mjs",
   "directories": {
     "example": "example"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "./scripts/build.sh",
+    "start": "./bin/amuse start",
+    "e2e": "./run.sh",
+    "test": "./bin/amuse test && node scripts/test_e2e.mjs",
+    "test:e2e": "node scripts/test_e2e.mjs",
+    "test:live": "node scripts/test_live_e2e.mjs"
   },
   "keywords": [],
   "author": "",

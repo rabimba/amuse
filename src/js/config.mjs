@@ -17,7 +17,8 @@ export function loadConfig() {
   }
 
   const apiKey = process.env.GEMINI_API_KEY || fileConfig.apiKey || '';
-  const model = process.env.GEMINI_MODEL || fileConfig.model || 'models/gemini-2.0-flash-exp';
+  const rawModel = process.env.GEMINI_MODEL || fileConfig.model || 'models/gemini-2.5-flash-native-audio-latest';
+  const model = rawModel === 'models/gemini-2.0-flash-exp' ? 'models/gemini-2.5-flash-native-audio-latest' : rawModel;
   const voice = fileConfig.voice || 'Puck'; // Puck, Charon, Kore, Fenrir, Aoede
 
   return {

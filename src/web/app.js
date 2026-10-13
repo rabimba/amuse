@@ -57,10 +57,52 @@ function updateMicUI(active) {
   }
 }
 
+const screenBtn = document.getElementById('screenBtn');
+const memoryBtn = document.getElementById('memoryBtn');
+const notesBtn = document.getElementById('notesBtn');
+const connectorsBtn = document.getElementById('connectorsBtn');
+
+if (screenBtn) {
+  screenBtn.addEventListener('click', () => {
+    postBridgeMessage('shareScreenSnapshot');
+  });
+}
+
+if (memoryBtn) {
+  memoryBtn.addEventListener('click', () => {
+    postBridgeMessage('showMemoryAndPlans');
+  });
+}
+
+if (notesBtn) {
+  notesBtn.addEventListener('click', () => {
+    postBridgeMessage('showNotesViewer');
+  });
+}
+
+if (connectorsBtn) {
+  connectorsBtn.addEventListener('click', () => {
+    postBridgeMessage('showConnectorsStatus');
+  });
+}
+
 // Close HUD button
 closeBtn.addEventListener('click', () => {
   postBridgeMessage('hideHUD');
 });
+
+// Allow dragging the borderless HUD window by its header
+const hudHeader = document.querySelector('.hud-header');
+if (hudHeader) {
+  hudHeader.addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return;
+    postBridgeMessage('startDrag', {
+      button: e.button + 1,
+      screenX: Math.round(e.screenX),
+      screenY: Math.round(e.screenY)
+    });
+  });
+}
 
 // Appends message to chat log
 function appendMessage(role, text) {
@@ -80,10 +122,49 @@ function appendToolChip(toolName, summary) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+  return String(str || '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
 }
 
-// Public API called by native Cocoa layer
+window.openDesktopPath = function(filePath) {
+  postBridgeMessage('openFile', { path: filePath });
+};
+
+window.appendRichCard = function(card) {
+  if (!card) return;
+  const el = document.createElement('div');
+  el.className = `rich-card card-${escapeHtml(card.cardType || 'info')}`;
+
+  const badge = card.badge ? `<span class="card-badge">${escapeHtml(card.badge)}</span>` : '';
+  const subtitle = card.subtitle ? `<div class="card-subtitle">${escapeHtml(card.subtitle)}</div>` : '';
+  const body = card.body ? `<div class="card-body">${escapeHtml(card.body)}</div>` : '';
+  let actionHtml = '';
+  if (card.filePath) {
+    const safePath = escapeHtml(card.filePath);
+    actionHtml = `<div class="card-actions"><button class="card-action-btn" data-path="${safePath}">${escapeHtml(card.actionLabel || 'Open on Desktop')}</button></div>`;
+  }
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">${escapeHtml(card.title || 'Amuse')}</span>
+      ${badge}
+    </div>
+    ${subtitle}
+    ${body}
+    ${actionHtml}
+  `;
+
+  const btn = el.querySelector('.card-action-btn');
+  if (btn && card.filePath) {
+    btn.addEventListener('click', () => {
+      postBridgeMessage('openFile', { path: card.filePath });
+    });
+  }
+
+  chatFeed.appendChild(el);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+};
+
+// Public API called by native layer
 window.setAgentStatus = function(state, details) {
   statusOrb.className = `status-orb state-${state}`;
   

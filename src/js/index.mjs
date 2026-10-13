@@ -1,11 +1,12 @@
 import readline from 'node:readline';
 import { loadConfig } from './config.mjs';
-import { getToolDeclarations, executeNativeTool } from './toolRegistry.mjs';
+import { getToolDeclarations, getStartupMemories } from './toolRegistry.mjs';
 import { GeminiLiveClient } from './geminiLiveClient.mjs';
 
 const config = loadConfig();
 const tools = getToolDeclarations();
-const client = new GeminiLiveClient(config, tools);
+const startupMemories = getStartupMemories();
+const client = new GeminiLiveClient(config, tools, startupMemories);
 
 // Helper to send line-delimited JSON to native host
 function sendToNative(obj) {
@@ -59,6 +60,9 @@ function handleNativeMessage(msg) {
     case 'audio_input_chunk':
       client.sendAudioChunk(msg.data);
       break;
+    case 'image_input_frame':
+      client.sendImageFrame(msg.data, msg.mimeType || 'image/png');
+      break;
     case 'user_text_input':
       client.sendTextMessage(msg.text);
       break;
@@ -66,7 +70,7 @@ function handleNativeMessage(msg) {
       // User paused mic
       break;
     case 'tool_call_response':
-      client.sendToolResponse(msg.callId, msg.output);
+      client.sendToolResponse(msg.callId, msg.output, msg.toolName);
       break;
     default:
       console.log('[AmuseOrchestrator] Unhandled message:', msg.type);
