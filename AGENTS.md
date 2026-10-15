@@ -2,7 +2,15 @@
 
 Personal AI agent (Gemini Multimodal Live API) with two-process design: native GUI binary + Node.js orchestrator. macOS (Objective-C/Cocoa) and Linux (C++/GTK/WebKit2GTK) supported. No CI; `main` branch; Conventional Commits (`feat(scope): ...`).
 
-**Master plan:** `docs/superpowers/specs/2026-10-14-amuse-muse-parity-design.md` — full Muse-parity rebuild (Rust host daemon + sandboxed TS harness + Sentinel safety plane + Swift/GTK node apps), milestones M0–M9. Currently in **M0 (legacy hardening)**. Read the spec first; it tracks per-task status and is written so a fresh session can resume.
+**Master plan:** `docs/superpowers/specs/2026-10-14-amuse-muse-parity-design.md` — full Muse-parity rebuild (Rust host daemon + sandboxed TS harness + Sentinel safety plane + Swift/GTK node apps), milestones M0–M9. Currently in **M1 (skeleton)** after M0 (legacy hardening) landed. Read the spec first; it tracks per-task status and is written so a fresh session can resume.
+
+## Monorepo (new, M1+)
+
+- `packages/hatch/` — provider-agnostic agent harness (TS/ESM, zero deps). `bin/hatch.mjs chat|ask`. Provider adapters: `src/providers/gemini.mjs` (REST), `src/providers/openai.mjs` (any OpenAI-compatible base URL: OpenAI/Ollama/vLLM/…). Config: `AMUSE_PROVIDER`, `OPENAI_API_KEY/BASE_URL/MODEL`, `GEMINI_API_KEY/MODEL` > `~/.amuse/config.json`. Tool execution currently shells to legacy `bin/amuse-bridge call` (replaced by Sentinel in M2).
+- `crates/amused/` — Rust host daemon (skeleton: compiles, resolves data dir). Gateway/store/scheduler/Sentinel/authd come in M1–M2.
+- `tests/scenarios/hatch_smoke.mjs` — `npm run test:hatch`: mock-provider full-loop check (no credentials needed) + live variants when keys present.
+- `apps/macos/`, `rootfs/` — placeholders for M3/M2.
+- Legacy lives in `src/` until M3.
 
 ## Commands
 

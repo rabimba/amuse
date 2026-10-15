@@ -1,0 +1,14 @@
+{
+  "name": "@amuse/hatch",
+  "version": "0.1.0",
+  "description": "Amuse agent harness — provider-agnostic agent loop (M1 skeleton)",
+  "type": "module",
+  "main": "src/agent.mjs",
+  "bin": {
+    "hatch": "bin/hatch.mjs"
+  },
+  "scripts": {
+    "chat": "node bin/hatch.mjs chat",
+    "smoke": "node ../../tests/scenarios/hatch_smoke.mjs"
+  }
+}

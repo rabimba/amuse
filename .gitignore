@@ -7,3 +7,5 @@ example/Muse.app
 example/cookies.txt
 node_modules
 .build
+crates/*/target
+packages/*/node_modules

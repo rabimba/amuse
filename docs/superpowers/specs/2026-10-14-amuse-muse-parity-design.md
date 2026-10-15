@@ -227,70 +227,71 @@ Deferred: phone calls, payments, agent email address, mobile/web client, Confide
 Legend: `[ ]` todo · `[x]` done. File references relative to repo root.
 
 ### M0.1 config fix (`src/js/config.mjs`)
-- [ ] env `GEMINI_API_KEY`/`GEMINI_MODEL` override file values; model normalization runs AFTER merge.
+- [x] env `GEMINI_API_KEY`/`GEMINI_MODEL` override file values; model normalization runs AFTER merge.
 
 ### M0.2 system prompt + client (`src/js/geminiLiveClient.mjs`)
-- [ ] Remove hardcoded personal emails/counts (lines ~169-176) → generic ("the user's connected email accounts").
-- [ ] Replace "33 native tools" claim with actual count passed in.
-- [ ] Linux notes rule only when platform is linux (pass platform into prompt builder).
-- [ ] Disable social auto-chain (lines ~506-537) behind `AMUSE_AUTO_SOCIAL=1` (default OFF).
-- [ ] REST tool timeout (:435-438) returns `{status:"error", error:"tool_timeout"}` instead of fake completed.
-- [ ] REST auth via `x-goog-api-key` header instead of `?key=` (keep `?key=` only for WSS).
+- [x] Remove hardcoded personal emails/counts (lines ~169-176) → generic ("the user's connected email accounts").
+- [x] Replace "33 native tools" claim with actual count passed in.
+- [x] Linux notes rule only when platform is linux (pass platform into prompt builder).
+- [x] Disable social auto-chain (lines ~506-537) behind `AMUSE_AUTO_SOCIAL=1` (default OFF).
+- [x] REST tool timeout (:435-438) returns `{status:"error", error:"tool_timeout"}` instead of fake completed.
+- [x] REST auth via `x-goog-api-key` header instead of `?key=` (keep `?key=` only for WSS).
 
 ### M0.3 IPC pollution (`src/js/index.mjs`)
-- [ ] :80 console.log → console.error.
+- [x] :80 console.log → console.error.
 
 ### M0.4 macOS IPC (`src/native/main.m`)
-- [ ] stdout reader (:131-141): accumulate buffer, split lines, keep partial.
-- [ ] sendToNode (:151-163): add NSLock.
+- [x] stdout reader (:131-141): accumulate buffer, split lines, keep partial.
+- [x] sendToNode (:151-163): add NSLock.
 
 ### M0.5 macOS connectors
-- [ ] NotesConnector.m:66: wrap `paragraph 1 of nText` in try.
-- [ ] LocalConnectorsManager.m:72-73: return error when date unparseable (no silent "now").
+- [x] NotesConnector.m:66: wrap `paragraph 1 of nText` in try.
+- [x] LocalConnectorsManager.m:72-73: return error when date unparseable (no silent "now").
 
 ### M0.6 Linux safety gates (`src/native/linux/main_linux.cpp`)
-- [ ] `computer_control_action run_command` → require `AMUSE_ALLOW_SHELL=1` else error w/ instructions.
-- [ ] `build_and_run_custom_tool` → require `AMUSE_ALLOW_CUSTOM_TOOLS=1`; add 30s timeout (alarm/poll).
-- [ ] `gui_desktop_action` (click/type/paste) → require `AMUSE_ALLOW_GUI_CONTROL=1`.
-- [ ] `social_media_action auto_submit` → require `AMUSE_ALLOW_AUTO_SUBMIT=1`.
-- [ ] `email_action send` → require `confirm_send:true` param (else return preview requiring confirmation); attachments limited to $HOME minus denylist (~/.ssh ~/.gnupg ~/.aws ~/.amuse ~/Library).
-- [ ] `manage_files` → deny paths outside $HOME (except /tmp), deny denylisted dirs, deny overwriting dotfiles directly under $HOME.
-- [ ] `web_search_and_fetch` → block localhost/RFC1918/link-local targets.
-- [ ] `list_connectors` → bind category with sqlite3_prepare/bind (no concat).
-- [ ] `connect_email_account` → password via stdin JSON to python (not argv); never log arg values for keys containing "pass"/"token"/"secret" (:4282 sanitizer).
-- [ ] `scripts/email_connector.py` → read args from stdin when argv[1] == "-".
+- [x] `computer_control_action run_command` → require `AMUSE_ALLOW_SHELL=1` else error w/ instructions.
+- [x] `build_and_run_custom_tool` → require `AMUSE_ALLOW_CUSTOM_TOOLS=1`; add 30s timeout (alarm/poll).
+- [x] `gui_desktop_action` (click/type/paste) → require `AMUSE_ALLOW_GUI_CONTROL=1`.
+- [x] `social_media_action auto_submit` → require `AMUSE_ALLOW_AUTO_SUBMIT=1`.
+- [x] `email_action send` → require `confirm_send:true` param (else return preview requiring confirmation); attachments limited to $HOME minus denylist (~/.ssh ~/.gnupg ~/.aws ~/.amuse ~/Library).
+- [x] `manage_files` → deny paths outside $HOME (except /tmp), deny denylisted dirs, deny overwriting dotfiles directly under $HOME.
+- [x] `web_search_and_fetch` → block localhost/RFC1918/link-local targets.
+- [x] `list_connectors` → bind category with sqlite3_prepare/bind (no concat).
+- [x] `connect_email_account` → password via stdin JSON to python (not argv); never log arg values for keys containing "pass"/"token"/"secret" (:4282 sanitizer).
+- [x] `scripts/email_connector.py` → read args from stdin when argv[1] == "-".
 
 ### M0.7 Linux correctness
-- [ ] Delete fake seed inserts (:2150-2225 memories/messages/notes/contacts/calendar/reminders/plans seeds). Keep schema. (Tests must create own fixtures.)
-- [ ] Notes: only write .md when content differs; skip syncAllNotesToDisk in `call` CLI mode.
-- [ ] Alarm: unparseable time → error (no 60s silent fire); re-arm persisted alarms at daemon start.
-- [ ] take_screenshot: set `streamed_to_gemini_vision` from actual send result.
-- [ ] Clipboard fallback (:260-264): pass text via stdin, not string splice.
-- [ ] signal(SIGCHLD, SIG_IGN) at startup (zombie fix :218).
-- [ ] tool_call_response (:4288): send output as JSON string (consistent w/ mac), never raw-embed.
+- [x] Delete fake seed inserts (:2150-2225 memories/messages/notes/contacts/calendar/reminders/plans seeds). Keep schema. (Tests must create own fixtures.)
+- [x] Notes: only write .md when content differs; skip syncAllNotesToDisk in `call` CLI mode.
+- [x] Alarm: unparseable time → error (no 60s silent fire).
+- [ ] Alarm: re-arm persisted alarms at daemon start (NOT done — in-process threads still die with the process; proper fix lands with M6 scheduler).
+- [x] take_screenshot: set `streamed_to_gemini_vision` from actual send result.
+- [x] Clipboard fallback (:260-264): pass text via stdin, not string splice.
+- [x] signal(SIGCHLD, SIG_IGN) at startup (zombie fix :218).
+- [x] tool_call_response (:4288): send output as JSON string (consistent w/ mac), never raw-embed.
 
 ### M0.8 Honest tests
-- [ ] `scripts/test_e2e.mjs`: real assertions (tool response received, transcript non-empty, audio chunk received); exit 1 on failure; run bridge calls with `HOME=<tmpdir>`; create fixtures (create_note) in tmp HOME; no dependence on fake seeds.
-- [ ] `bin/amuse test`: same temp-HOME approach; check JSON `status` fields; exit non-zero on failure.
-- [ ] `scripts/test_live_e2e.mjs`: model names from config default; TTS failure ≠ pass; exit code reflects failures.
+- [x] `scripts/test_e2e.mjs`: real assertions (tool response received, transcript non-empty, audio chunk received); exit 1 on failure; run bridge calls with `HOME=<tmpdir>`; create fixtures (create_note) in tmp HOME; no dependence on fake seeds.
+- [x] `bin/amuse test`: same temp-HOME approach; check JSON `status` fields; exit non-zero on failure.
+- [x] `scripts/test_live_e2e.mjs`: model names from config default; TTS failure ≠ pass; exit code reflects failures.
 
 ### M0.9 Docs + UI de-personalization
-- [ ] `src/web/index.html:66`, `src/web/app.js:167`, `main_linux.cpp:1144`: remove hardcoded personal stats/emails.
-- [ ] README.md: honest tool counts (9 mac read-mostly / 33 linux w/ stubs listed), correct default model, safety flags table, known-limitations section, pointer to this spec.
-- [ ] AGENTS.md: safety flags, honest test description, roadmap pointer.
+- [x] `src/web/index.html:66`, `src/web/app.js:167`, `main_linux.cpp:1144`: remove hardcoded personal stats/emails.
+- [x] README.md: honest tool counts (9 mac read-mostly / 33 linux w/ stubs listed), correct default model, safety flags table, known-limitations section, pointer to this spec.
+- [x] AGENTS.md: safety flags, honest test description, roadmap pointer.
 
 ### M0 verify + commit
-- [ ] `npm run build` clean (mac).
-- [ ] `npm run test:e2e` green.
-- [ ] `bin/amuse call` smoke: search_messages, create_note (tmp HOME), gated tools refuse without flags.
-- [ ] Commit `feat(...)`: M0 hardening.
+- [x] `npm run build` clean (mac).
+- [x] `npm run test:e2e` green.
+- [x] `bin/amuse call` smoke: search_messages, create_note (tmp HOME), gated tools refuse without flags.
+- [x] Commit `feat(...)`: M0 hardening.
 
 ## 7. M1 implementation plan (skeleton)
 
-- [ ] Monorepo layout (crates/, packages/, apps/, rootfs/, tests/) added alongside legacy (legacy stays until M3).
-- [ ] `packages/proto`: JSON Schema protocol + TS/Rust typegen (message parts, tool manifest, effect request, gateway JSON-RPC).
-- [ ] `crates/amused`: minimal — config load, gateway WS (UDS), store (SQLite WAL, event log append/read), model proxy (header auth injection for gemini+openai endpoints only), spawns hatch.
-- [ ] `packages/hatch`: provider adapters (gemini REST generateContent + stream; openai chat.completions + stream), canonical message format, tool schema conversion, agent loop (turn → tool calls → results → final), tool execution via LEGACY bridge CLI (`bin/amuse-bridge call`) as temporary backend, CLI chat entry.
-- [ ] `packages/cli`: `amuse chat`, `amuse call <tool>`.
-- [ ] Scenario smoke test: "create a note titled X with body Y, then read it back" runs under both providers (recorded/mocked in CI; live opt-in) on mac.
+- [x] Monorepo layout (crates/, packages/, tests/) added alongside legacy (legacy stays until M3).
+- [ ] `packages/proto`: JSON Schema protocol + TS/Rust typegen (message parts, tool manifest, effect request, gateway JSON-RPC). **Deferred to M2** (needed when amused gateway exists).
+- [~] `crates/amused`: PARTIAL — compiles, resolves data dir per platform, prints status. Gateway WS (UDS), store (SQLite WAL event log), model proxy, hatch supervision: **next M1 increment**.
+- [x] `packages/hatch`: provider adapters (gemini REST generateContent; openai-compatible chat.completions — non-streaming), canonical message format, tool schema conversion (Gemini UPPERCASE ↔ JSON Schema), agent loop (turn → tool calls → results → final, 8-round cap), tool execution via LEGACY bridge CLI (`bin/amuse-bridge call`) as temporary backend, CLI (`packages/hatch/bin/hatch.mjs chat|ask`). Streaming + Gemini Live adapter: **next M1 increment**.
+- [x] CLI: `node packages/hatch/bin/hatch.mjs chat` / `ask "prompt"` (standalone packages/cli deferred).
+- [x] Scenario smoke test `tests/scenarios/hatch_smoke.mjs` (`npm run test:hatch`): credential-free mock OpenAI-compatible server verifies tools offered → bridge executes search_messages → result round-trips → final answer; live Gemini/OpenAI variants run when keys exist (skip otherwise). Note: note-creation scenario avoided because macOS create_note writes real Apple Notes; used read-only no-hit search instead.
 - [ ] AGENTS.md updated for monorepo.
