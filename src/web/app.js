@@ -163,8 +163,8 @@ function renderMuseIdeasFeed() {
     {
       title: '✉️ Proactive Idea: Summarize Real Thunderbird & IMAP Emails',
       badge: 'EMAIL',
-      subtitle: 'On-Device Thunderbird (32.9k Messages) + Hosted IMAP/SMTP',
-      body: 'Query your real on-device Thunderbird inbox (rkaranja@cougarnet.uh.edu, rabimba@shin.so) and connected IMAP accounts, or connect a new hosted email account.',
+      subtitle: 'On-Device Thunderbird + Hosted IMAP/SMTP',
+      body: 'Query your on-device Thunderbird inbox and any connected IMAP accounts, or connect a new hosted email account.',
       prompt: 'Can you check my real emails from Thunderbird and summarize the latest ones?'
     },
     {

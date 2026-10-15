@@ -378,6 +378,13 @@ def main():
     if len(sys.argv) < 2:
         args = {"action": "search"}
         action = "search"
+    elif sys.argv[1] == "-":
+        # Read JSON args from stdin — keeps secrets out of argv / `ps`
+        try:
+            args = json.loads(sys.stdin.read())
+        except Exception:
+            args = {}
+        action = args.get("action", "search")
     elif sys.argv[1].strip().startswith("{"):
         try:
             args = json.loads(sys.argv[1])

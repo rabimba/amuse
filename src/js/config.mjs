@@ -16,17 +16,17 @@ export function loadConfig() {
     console.error('[AmuseConfig] Error reading config file:', err.message);
   }
 
-  const apiKey = process.env.GEMINI_API_KEY || fileConfig.apiKey || '';
-  const rawModel = process.env.GEMINI_MODEL || fileConfig.model || 'models/gemini-2.5-flash-native-audio-latest';
-  const model = rawModel === 'models/gemini-2.0-flash-exp' ? 'models/gemini-2.5-flash-native-audio-latest' : rawModel;
-  const voice = fileConfig.voice || 'Puck'; // Puck, Charon, Kore, Fenrir, Aoede
+  // Env vars must override file values, so apply them after spreading fileConfig.
+  const merged = { ...fileConfig };
+  if (process.env.GEMINI_API_KEY) merged.apiKey = process.env.GEMINI_API_KEY;
+  if (process.env.GEMINI_MODEL) merged.model = process.env.GEMINI_MODEL;
 
-  return {
-    apiKey,
-    model,
-    voice,
-    ...fileConfig
-  };
+  merged.apiKey = merged.apiKey || '';
+  const rawModel = merged.model || 'models/gemini-2.5-flash-native-audio-latest';
+  merged.model = rawModel === 'models/gemini-2.0-flash-exp' ? 'models/gemini-2.5-flash-native-audio-latest' : rawModel;
+  merged.voice = merged.voice || 'Puck'; // Puck, Charon, Kore, Fenrir, Aoede
+
+  return merged;
 }
 
 export function saveConfig(updates) {

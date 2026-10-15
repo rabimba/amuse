@@ -31,7 +31,9 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -123,6 +125,37 @@ static std::string urlEncode(const std::string &s) {
     return escaped.str();
 }
 
+// Scrub secret-looking values before writing tool args to logs.
+static std::string sanitizeArgsForLog(const std::string &argsJson) {
+    std::string out = argsJson;
+    std::string lower = argsJson;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    static const char *secretKeys[] = {"password", "passwd", "secret", "token", "api_key", "apikey", "auth"};
+    for (const char *key : secretKeys) {
+        std::string needle = std::string("\"") + key + "\"";
+        size_t pos = 0;
+        while ((pos = lower.find(needle, pos)) != std::string::npos) {
+            size_t colon = lower.find(':', pos + needle.size());
+            if (colon == std::string::npos) break;
+            size_t vstart = lower.find_first_not_of(" \t", colon + 1);
+            if (vstart == std::string::npos) break;
+            size_t vend = vstart;
+            if (lower[vstart] == '"') {
+                vend = lower.find('"', vstart + 1);
+                if (vend == std::string::npos) break;
+                vend++;
+            } else {
+                vend = lower.find_first_of(",}", vstart);
+                if (vend == std::string::npos) vend = lower.size();
+            }
+            out.replace(vstart, vend - vstart, "\"***\"");
+            lower.replace(vstart, vend - vstart, "\"***\"");
+            pos = vend;
+        }
+    }
+    return out;
+}
+
 static std::string getHomeDir() {
     const char *home = getenv("HOME");
     return (home && *home) ? std::string(home) : ".";
@@ -154,6 +187,19 @@ static std::string sanitizeFilename(const std::string &title) {
     if (out.empty()) out = "Untitled_Note";
     if (out.size() > 80) out = out.substr(0, 80);
     return out;
+}
+
+static bool envFlagEnabled(const char *name) {
+    const char *v = std::getenv(name);
+    if (!v) return false;
+    return strcmp(v, "1") == 0 || strcasecmp(v, "true") == 0 || strcasecmp(v, "yes") == 0;
+}
+
+// Safety gate: dangerous capability disabled unless the user explicitly opted in.
+static std::string gatedError(const char *flag, const std::string &capability) {
+    return std::string("{\"status\":\"blocked\",\"error\":\"safety_gate\",\"message\":\"") +
+           capability + " is disabled by default. To enable it, restart Amuse with " + flag +
+           "=1 in the environment. This capability can execute arbitrary actions on your machine, so enable it only if you accept that risk.\"}";
 }
 
 static std::string getNotesDir() {
@@ -199,8 +245,13 @@ static std::string getRepoRootDir() {
 static void spawnDetachedProcess(const std::vector<std::string> &args) {
     if (args.empty()) return;
     std::thread([args]() {
+        // Double-fork so the child is reparented to init and never becomes a zombie
         pid_t pid = fork();
         if (pid == 0) {
+            pid_t pid2 = fork();
+            if (pid2 != 0) _exit(0); // first child exits; grandchild reparents
+            if (pid2 < 0) _exit(1);
+            setsid();
             int devNull = open("/dev/null", O_RDWR);
             if (devNull >= 0) {
                 dup2(devNull, STDIN_FILENO);
@@ -215,9 +266,146 @@ static void spawnDetachedProcess(const std::vector<std::string> &args) {
             _exit(0);
         } else if (pid > 0) {
             int status = 0;
-            waitpid(pid, &status, WNOHANG);
+            waitpid(pid, &status, 0); // first child exits immediately
         }
     }).detach();
+}
+
+// Like spawnDetachedProcess, but writes `stdinData` to the child's stdin.
+static void spawnDetachedProcessWithStdin(const std::vector<std::string> &args, const std::string &stdinData) {
+    if (args.empty()) return;
+    int pipeFds[2];
+    if (pipe(pipeFds) != 0) return;
+    std::thread([args, stdinData, pipeFds]() {
+        pid_t pid = fork();
+        if (pid == 0) {
+            dup2(pipeFds[0], STDIN_FILENO);
+            close(pipeFds[0]);
+            close(pipeFds[1]);
+            int devNull = open("/dev/null", O_RDWR);
+            if (devNull >= 0) {
+                dup2(devNull, STDOUT_FILENO);
+                dup2(devNull, STDERR_FILENO);
+                close(devNull);
+            }
+            std::vector<char *> argv;
+            for (const auto &a : args) argv.push_back(const_cast<char *>(a.c_str()));
+            argv.push_back(nullptr);
+            execvp(argv[0], argv.data());
+            _exit(0);
+        }
+        close(pipeFds[0]);
+        if (pid > 0) {
+            size_t off = 0;
+            while (off < stdinData.size()) {
+                ssize_t w = write(pipeFds[1], stdinData.data() + off, stdinData.size() - off);
+                if (w <= 0) break;
+                off += static_cast<size_t>(w);
+            }
+            close(pipeFds[1]);
+            int status = 0;
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        } else {
+            close(pipeFds[1]);
+        }
+    }).detach();
+}
+
+// Run a process with args (no shell), write stdinData to its stdin, capture
+// stdout (capped), with a hard timeout. Used for credential-bearing calls so
+// secrets never appear in argv (visible in `ps`).
+static std::string runProcessWithIO(const std::vector<std::string> &args, const std::string &stdinData,
+                                    size_t maxOut, int timeoutSec) {
+    if (args.empty()) return "";
+    int inPipe[2], outPipe[2];
+    if (pipe(inPipe) != 0) return "";
+    if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return ""; }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(inPipe[0], STDIN_FILENO);
+        dup2(outPipe[1], STDOUT_FILENO);
+        int devNull = open("/dev/null", O_WRONLY);
+        if (devNull >= 0) { dup2(devNull, STDERR_FILENO); close(devNull); }
+        close(inPipe[0]); close(inPipe[1]);
+        close(outPipe[0]); close(outPipe[1]);
+        std::vector<char *> argv;
+        for (const auto &a : args) argv.push_back(const_cast<char *>(a.c_str()));
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+
+    close(inPipe[0]);
+    close(outPipe[1]);
+    if (pid < 0) { close(inPipe[1]); close(outPipe[0]); return ""; }
+    // Non-blocking read end so the timeout is actually enforced
+    fcntl(outPipe[0], F_SETFL, O_NONBLOCK);
+
+    // Feed stdin (ignore SIGPIPE if child exits early)
+    signal(SIGPIPE, SIG_IGN);
+    size_t off = 0;
+    while (off < stdinData.size()) {
+        ssize_t w = write(inPipe[1], stdinData.data() + off, stdinData.size() - off);
+        if (w <= 0) break;
+        off += static_cast<size_t>(w);
+    }
+    close(inPipe[1]);
+
+    std::string out;
+    out.reserve(4096);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+    bool killed = false;
+    while (true) {
+        char buf[4096];
+        ssize_t r = read(outPipe[0], buf, sizeof(buf));
+        if (r > 0) {
+            out.append(buf, static_cast<size_t>(r));
+            if (out.size() >= maxOut) { out.resize(maxOut); break; }
+            continue;
+        }
+        if (r == 0) break; // EOF
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (std::chrono::steady_clock::now() > deadline) { killed = true; break; }
+            struct timeval tv{0, 100000};
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(outPipe[0], &rfds);
+            select(outPipe[0] + 1, &rfds, nullptr, nullptr, &tv);
+            continue;
+        }
+        break;
+    }
+    close(outPipe[0]);
+    if (killed) {
+        kill(pid, SIGKILL);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return out;
+}
+
+// Paths the agent may share outward (email attachments, uploads): inside the
+// user's home, excluding sensitive locations.
+static bool isPathAllowedForSharing(const std::string &rawPath) {
+    if (rawPath.empty()) return true;
+    std::string p = rawPath;
+    if (!p.empty() && p[0] == '~') p = getHomeDir() + p.substr(1);
+    char resolved[PATH_MAX];
+    if (!realpath(p.c_str(), resolved)) return false;
+    std::string path(resolved);
+    std::string home = getHomeDir();
+    if (path == home || path.rfind(home + "/", 0) != 0) return false;
+    static const char *deny[] = {
+        "/.ssh", "/.gnupg", "/.aws", "/.config/gcloud", "/.amuse", "/.kube",
+        "/.docker", "/.local/share/keyrings", "/Library"
+    };
+    std::string rel = path.substr(home.size());
+    for (const char *d : deny) {
+        if (rel == d || rel.rfind(std::string(d) + "/", 0) == 0) return false;
+    }
+    return true;
 }
 
 static void sendDesktopNotification(const std::string &title, const std::string &body, bool critical = false) {
@@ -257,11 +445,13 @@ static void copyToClipboard(const std::string &text) {
             nullptr
         );
     } else {
-        std::string py = "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk, Gdk, GLib; "
+        // Pass the text via stdin so quotes/backslashes in the text can't inject code
+        std::string py = "import gi, sys; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk, Gdk, GLib; "
+                         "text = sys.stdin.read(); "
                          "cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); "
-                         "cb.set_text(" + std::string("'''") + text + "'''" + ", -1); cb.store(); "
+                         "cb.set_text(text, -1); cb.store(); "
                          "GLib.timeout_add(4000, Gtk.main_quit); Gtk.main()";
-        spawnDetachedProcess({"/usr/bin/python3", "-c", py});
+        spawnDetachedProcessWithStdin({"/usr/bin/python3", "-c", py}, text);
     }
 }
 
@@ -789,6 +979,11 @@ public:
         if (cb) cb(base64Data, mimeType);
     }
 
+    bool hasImageFrameSink() {
+        std::lock_guard<std::mutex> lock(cbMutex_);
+        return static_cast<bool>(imageFrameCb_);
+    }
+
     std::string getToolDeclarationsJson() {
         return R"JSON([
   {
@@ -1141,7 +1336,7 @@ public:
   },
   {
     "name": "email_action",
-    "description": "Searches, reads, drafts, or sends REAL emails across BOTH the user's on-device Thunderbird email client (32,900+ real messages inrkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) AND connected hosted IMAP/SMTP accounts (~/.amuse/email_accounts.json) or Gmail Web.",
+    "description": "Searches, reads, drafts, or sends real emails across the user's on-device Thunderbird email client AND any connected hosted IMAP/SMTP accounts (~/.amuse/email_accounts.json). Sending requires confirm_send: true after showing the user the exact draft.",
     "parameters": {
       "type": "OBJECT",
       "properties": {
@@ -1581,6 +1776,10 @@ public:
             std::string platform = args.getString("platform", "linkedin");
             autoConnect(platform);
             std::string schedTime = args.getString("schedule_time", "");
+            bool autoSubmit = args.getBool("auto_submit", false);
+            if (autoSubmit && !envFlagEnabled("AMUSE_ALLOW_AUTO_SUBMIT")) {
+                return gatedError("AMUSE_ALLOW_AUTO_SUBMIT", "Auto-submitting social media posts");
+            }
             return socialMediaAction(
                 platform,
                 args.getString("action", schedTime.empty() ? "post_now" : "schedule"),
@@ -1619,8 +1818,12 @@ public:
             );
         } else if (toolName == "computer_control_action") {
             autoConnect("computer_control");
+            std::string ccAction = args.getString("action", "");
+            if (ccAction == "run_command" && !envFlagEnabled("AMUSE_ALLOW_SHELL")) {
+                return gatedError("AMUSE_ALLOW_SHELL", "Running arbitrary shell commands");
+            }
             return computerControlAction(
-                args.getString("action", ""),
+                ccAction,
                 args.getString("target", "")
             );
         } else if (toolName == "web_search_and_fetch") {
@@ -1653,6 +1856,9 @@ public:
                 args.getString("status", "in_progress")
             );
         } else if (toolName == "build_and_run_custom_tool") {
+            if (!envFlagEnabled("AMUSE_ALLOW_CUSTOM_TOOLS")) {
+                return gatedError("AMUSE_ALLOW_CUSTOM_TOOLS", "Writing and executing custom Python/Bash tools");
+            }
             autoConnect("dynamic_tools");
             return buildAndRunCustomTool(
                 args.getString("tool_name", "custom_script"),
@@ -1668,6 +1874,9 @@ public:
             return browserAgentAction(argsJson);
         } else if (toolName == "gui_desktop_action") {
             autoConnect("computer_control");
+            if (!envFlagEnabled("AMUSE_ALLOW_GUI_CONTROL")) {
+                return gatedError("AMUSE_ALLOW_GUI_CONTROL", "Synthetic keyboard/mouse input into desktop windows");
+            }
             return guiDesktopAction(argsJson);
         }
 
@@ -1752,7 +1961,7 @@ public:
         }
         emitRichCard({
             "connector",
-            "🔌 Active Muse Connectors (20 Services)",
+            "🔌 Amuse Connectors",
             "Auto-Connect Enabled",
             "Local + Cloud Connectors in ~/.amuse/local_data.db",
             body.str(),
@@ -1859,15 +2068,29 @@ private:
         return false;
     }
 
-    static std::string writeNoteMarkdownFile(const std::string &title, const std::string &dateStr, const std::string &body) {
+    static std::string writeNoteMarkdownFile(const std::string &title, const std::string &dateStr, const std::string &body, bool overwrite = false) {
         std::string dir = getNotesDir();
         std::string filename = sanitizeFilename(title) + ".md";
         std::string fullPath = dir + "/" + filename;
+        std::ostringstream desired;
+        desired << "# " << title << "\n\n";
+        desired << "*Updated: " << dateStr << "*\n\n";
+        desired << body << "\n";
+        std::string desiredStr = desired.str();
+        {
+            std::ifstream ifs(fullPath, std::ios::binary);
+            if (ifs.is_open()) {
+                std::ostringstream cur;
+                cur << ifs.rdbuf();
+                if (cur.str() == desiredStr) return fullPath;
+                // Never clobber a file the user may have edited in their own
+                // editor unless the caller explicitly overwrites (create_note).
+                if (!overwrite) return fullPath;
+            }
+        }
         std::ofstream ofs(fullPath, std::ios::out | std::ios::trunc);
         if (ofs.is_open()) {
-            ofs << "# " << title << "\n\n";
-            ofs << "*Updated: " << dateStr << "*\n\n";
-            ofs << body << "\n";
+            ofs << desiredStr;
             ofs.close();
         }
         return fullPath;
@@ -2120,109 +2343,56 @@ private:
     }
 
     void seedIfEmpty() {
-        if (tableRowCount("connectors") < 20) {
+        // No fake personal data is ever seeded. Messages/contacts/calendar/reminders/notes
+        // tables start empty and are filled only by real user data or real connectors.
+
+        if (tableRowCount("connectors") < 1) {
+            // Honest connector registry: local tools that genuinely work are 'connected';
+            // cloud services are 'available' (advertised, not yet connected — no OAuth yet).
             const char *sql = R"(
                 INSERT OR IGNORE INTO connectors (id, name, category, status, permission, description, last_used) VALUES
-                ('notes', 'Local Markdown Notes (~/Documents/AmuseNotes)', 'local', 'connected', 'read_and_write', 'Reads and writes Markdown notes in ~/Documents/AmuseNotes/ and ~/Notes/ + HUD Note Viewer', 'Active'),
-                ('calendar', 'Local & GNOME Calendar (.ics)', 'local', 'connected', 'read_and_write', 'Manages local calendar events and syncs with GNOME Evolution calendar.ics', 'Active'),
-                ('reminders', 'Local & GNOME Tasks (.ics)', 'local', 'connected', 'read_and_write', 'Manages to-do reminders and syncs with GNOME Evolution tasks.ics', 'Active'),
+                ('notes', 'Local Markdown Notes (~/Documents/AmuseNotes)', 'local', 'connected', 'read_and_write', 'Reads and writes Markdown notes in ~/Documents/AmuseNotes/ and ~/Notes/', 'Active'),
                 ('alarms_timers', 'System Alarms, Timers & Scheduler', 'local', 'connected', 'read_and_write', 'Background alarms, countdown timers, audio chimes, and scheduled tasks', 'Active'),
-                ('messages', 'Local Messages & Chat', 'local', 'connected', 'read_and_write', 'Searches and sends local messages and chat logs', 'Active'),
-                ('contacts', 'Local Contacts & Address Book', 'local', 'connected', 'read_and_write', 'Searches and manages contacts, phone numbers, and emails', 'Active'),
-                ('files_disk', 'Full-Disk File Assistant', 'local', 'connected', 'read_and_write', 'Searches, reads, writes, and organizes files in ~/Documents, ~/Downloads, ~/Desktop', 'Active'),
-                ('computer_control', 'Computer Control, Screenshot & Screencast', 'local', 'connected', 'read_and_write', 'Records ffmpeg MP4 screencasts, captures PNG screenshots, controls apps & clipboard', 'Active'),
-                ('active_memory', 'Muse Active Memory & Action Plans', 'local', 'connected', 'read_and_write', 'Persists user preferences, facts, habits, and multi-step project plans across sessions', 'Active'),
-                ('dynamic_tools', 'Muse Dynamic Custom Tool Builder', 'local', 'connected', 'read_and_write', 'Dynamically writes and executes custom Python and Bash tools in ~/.amuse/custom_tools/', 'Active'),
-                ('web_browser', 'Live Web Search & Browser Automation', 'cloud', 'connected', 'read_and_write', 'Searches the live web, reads webpages, and opens browser workflows', 'Active'),
-                ('linkedin', 'LinkedIn Connector', 'cloud', 'connected', 'read_and_write', 'Drafts, schedules, copies, and launches LinkedIn posts and share workflows', 'Active'),
-                ('gmail', 'Gmail & Email Connector', 'cloud', 'connected', 'read_and_write', 'Searches, drafts, and composes emails via local DB and Gmail web/mail client', 'Active'),
-                ('google_calendar', 'Google Calendar Connector', 'cloud', 'connected', 'read_and_write', 'Syncs events and opens Google Calendar scheduling workflows', 'Active'),
-                ('google_docs', 'Google Docs & Drive Connector', 'cloud', 'connected', 'read_and_write', 'Creates and syncs documents locally and via Google Docs', 'Active'),
-                ('slack', 'Slack Workspace Connector', 'cloud', 'connected', 'read_and_write', 'Sends and searches Slack workspace messages', 'Active'),
-                ('notion', 'Notion Workspace Connector', 'cloud', 'connected', 'read_and_write', 'Syncs Notion pages and Markdown documents in ~/Documents/AmuseNotes/Notion', 'Active'),
-                ('github', 'GitHub Connector (gh CLI & Web)', 'cloud', 'connected', 'read_and_write', 'Queries repositories, issues, and PRs via GitHub CLI and web', 'Active'),
-                ('whatsapp', 'WhatsApp Connector', 'cloud', 'connected', 'read_and_write', 'Sends and tracks WhatsApp messages and opens WhatsApp Web', 'Active'),
-                ('spotify', 'Spotify & System Media Connector', 'cloud', 'connected', 'read_and_write', 'Controls desktop media playback (MPRIS), volume, and Spotify', 'Active');
+                ('active_memory', 'Active Memory & Action Plans', 'local', 'connected', 'read_and_write', 'Persists user preferences, facts, habits, and multi-step project plans across sessions', 'Active'),
+                ('files_disk', 'File Assistant (home directory)', 'local', 'connected', 'read_and_write', 'Searches, reads, writes, and organizes files inside the home directory', 'Active'),
+                ('computer_control', 'Screenshot & Screencast', 'local', 'connected', 'read_and_write', 'Records ffmpeg MP4 screencasts and captures PNG screenshots', 'Active'),
+                ('web_browser', 'Web Search & Browser Automation', 'local', 'connected', 'read_and_write', 'Searches the web, reads webpages, and runs Playwright browser tasks', 'Active'),
+                ('email', 'Email (Thunderbird & IMAP/SMTP)', 'local', 'connected', 'read_and_write', 'Searches on-device Thunderbird mail and hosted IMAP accounts; sends via SMTP with confirmation', 'Active'),
+                ('messages', 'Local Messages & Chat', 'local', 'available', 'read_and_write', 'Local message store (no real message source connected yet)', 'never'),
+                ('calendar', 'Local Calendar', 'local', 'available', 'read_and_write', 'Local calendar store; Evolution/EDS sync not yet wired', 'never'),
+                ('reminders', 'Local Tasks', 'local', 'available', 'read_and_write', 'Local reminders store; Evolution/EDS sync not yet wired', 'never'),
+                ('contacts', 'Contacts (Thunderbird address books)', 'local', 'available', 'read_and_write', 'Reads Thunderbird contact names; local store for new contacts', 'never'),
+                ('gmail', 'Gmail Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned). Generic IMAP/SMTP works today via connect_email_account.', 'never'),
+                ('google_calendar', 'Google Calendar Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned).', 'never'),
+                ('google_docs', 'Google Docs & Drive Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned).', 'never'),
+                ('slack', 'Slack Workspace Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned).', 'never'),
+                ('notion', 'Notion Workspace Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned).', 'never'),
+                ('github', 'GitHub Connector', 'cloud', 'available', 'read_only', 'Not connected: requires OAuth (planned).', 'never'),
+                ('whatsapp', 'WhatsApp Connector', 'cloud', 'available', 'read_only', 'Not connected: messaging channel planned.', 'never'),
+                ('linkedin', 'LinkedIn Connector', 'cloud', 'available', 'read_only', 'Not connected: browser-assisted composer only (opens share URL, no API).', 'never'),
+                ('spotify', 'Spotify & System Media Connector', 'cloud', 'available', 'read_only', 'Desktop media keys via MPRIS work; Spotify account API not connected.', 'never');
             )";
             sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
         }
 
-        if (tableRowCount("memories") == 0) {
-            const char *sql = R"(
-                INSERT INTO memories (key, value, category, updated_at) VALUES
-                ('user_name', 'Rabimba Karanjai', 'personal', '2026-10-13 05:00:00'),
-                ('desktop_environment', 'Ubuntu 24.04 Linux Desktop (X11/GNOME, PipeWire audio). Notes are stored as Markdown files in ~/Documents/AmuseNotes/ and ~/Notes/.', 'preference', '2026-10-13 05:00:00'),
-                ('active_project', 'Building Amuse with full Meta Muse feature parity, duplex Gemini Live voice, and local/cloud connectors.', 'project', '2026-10-13 05:00:00');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
+        // One-time cleanup of fake data seeded by older builds
+        sqlite3_exec(db_,
+            "DELETE FROM messages WHERE guid IN ('msg-101','msg-102','msg-103','msg-104');"
+            "DELETE FROM contacts WHERE id IN ('contact-001','contact-002','contact-003','contact-004');"
+            "DELETE FROM calendar_events WHERE id IN ('evt-001','evt-002');"
+            "DELETE FROM reminders WHERE id IN ('rem-001','rem-002');"
+            "DELETE FROM action_plans WHERE id = 'plan-001';"
+            "DELETE FROM notes WHERE title IN ('Infrastructure & Servers Inventory','Amuse Agent Architecture & Roadmap','Binary Reverse Engineering Notes');"
+            "DELETE FROM memories WHERE key IN ('user_name','desktop_environment','active_project') AND updated_at = '2026-10-13 05:00:00';"
+            "DELETE FROM emails WHERE id IN ('mail-001', 'mail-002');",
+            nullptr, nullptr, nullptr);
 
-        if (tableRowCount("action_plans") == 0) {
-            const char *sql = R"(
-                INSERT INTO action_plans (id, goal, steps, status, updated_at) VALUES
-                ('plan-001', 'Amuse Launch & LinkedIn Demo', '1. [x] Port native HUD & PipeWire audio to Linux\n2. [x] Enable 20 Muse connectors & Markdown Notes\n3. [ ] Record 5s screencast & publish LinkedIn post at 9:00 AM CST', 'in_progress', '2026-10-13 05:10:00');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
-
-        // Never seed fake emails — purge any legacy placeholder rows so email_action only returns real Thunderbird / IMAP emails
-        sqlite3_exec(db_, "DELETE FROM emails WHERE id IN ('mail-001', 'mail-002');", nullptr, nullptr, nullptr);
-
-        if (tableRowCount("messages") == 0) {
-            const char *sql = R"(
-                INSERT INTO messages (guid, text, sender, is_from_me, date) VALUES
-                ('msg-101', 'Hey! Did you get a chance to decompile the Endo Mach-O binary and inspect the Gemini Live bridge symbols?', '+14155550192 (Alex Chen)', 0, '2026-10-12 18:42:10'),
-                ('msg-102', 'Yes, finished the Decompile pass on HatchClient and S2SAudioEngine. Pushing the architecture notes now.', 'Me', 1, '2026-10-12 18:45:02'),
-                ('msg-103', 'Are we still on for the AI Agent architecture review today at 2:00 PM?', 'Sarah Jenkins', 0, '2026-10-13 09:15:00'),
-                ('msg-104', 'Production GPU cluster health check passed: all 8 inference nodes online.', 'DevOps Bot', 0, '2026-10-13 10:30:00');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
-
-        if (tableRowCount("notes") == 0) {
-            const char *sql = R"(
-                INSERT INTO notes (title, date, preview, body) VALUES
-                ('Infrastructure & Servers Inventory', '2026-10-12 16:20:00',
-                 'Primary GPU Servers: node-alpha (8x H100, 10.0.1.10), node-beta (4x A100, 10.0.1.11), staging-api (Ubuntu 24.04, port 8443).',
-                 'Primary GPU Servers: node-alpha (8x H100, 10.0.1.10), node-beta (4x A100, 10.0.1.11), staging-api (Ubuntu 24.04, port 8443). NAS backup on 10.0.1.50.'),
-                ('Amuse Agent Architecture & Roadmap', '2026-10-13 01:05:00',
-                 '1. Gemini Multimodal Live duplex audio stream. 2. Local SQLite & desktop connectors. 3. Double-tap Option/Alt floating HUD.',
-                 '1. Gemini Multimodal Live duplex audio stream. 2. Local SQLite & desktop connectors. 3. Double-tap Option/Alt floating HUD.'),
-                ('Binary Reverse Engineering Notes', '2026-10-11 21:10:00',
-                 'Decompile analysis of Endo binary: DoubleOptionTapShortcutHandler, S2SAudioEngine, LocalConnectorsManager.',
-                 'Decompile analysis of Endo binary: DoubleOptionTapShortcutHandler, S2SAudioEngine, LocalConnectorsManager.');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
-
-        if (tableRowCount("contacts") == 0) {
-            const char *sql = R"(
-                INSERT INTO contacts (id, given_name, family_name, full_name, organization, phone_label, phone_number, email_label, email_address) VALUES
-                ('contact-001', 'Alex', 'Chen', 'Alex Chen', 'DeepMind Systems', 'Mobile', '+1-415-555-0192', 'Work', 'alex.chen@example.com'),
-                ('contact-002', 'Sarah', 'Jenkins', 'Sarah Jenkins', 'Mozilla Research', 'Mobile', '+1-650-555-0148', 'Work', 'sarah.jenkins@example.com'),
-                ('contact-003', 'Rabimba', 'Karanjai', 'Rabimba Karanjai', 'Amuse Project', 'Mobile', '+1-408-555-0177', 'Work', 'rabimba@mozilla.com'),
-                ('contact-004', 'Test', 'Contact', 'Test Contact', 'Amuse QA', 'Work', '+1-800-555-0199', 'Work', 'test@amuse.local');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
-
-        if (tableRowCount("calendar_events") == 0) {
-            const char *sql = R"(
-                INSERT INTO calendar_events (id, title, start_iso, end_iso, is_all_day, location, notes, calendar) VALUES
-                ('evt-001', 'AI Agent Architecture Sync', '2026-10-13T14:00:00-07:00', '2026-10-13T15:00:00-07:00', 0, 'Meet / Room 4B', 'Review Gemini Live duplex audio latency and local tool calling with Sarah and Alex.', 'Work'),
-                ('evt-002', 'GPU Cluster Maintenance Window', '2026-10-15T10:00:00-07:00', '2026-10-15T11:30:00-07:00', 0, 'Data Center / Remote', 'Kernel update on node-alpha and node-beta servers.', 'Ops');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
-
-        if (tableRowCount("reminders") == 0) {
-            const char *sql = R"(
-                INSERT INTO reminders (id, title, completed, due_date, notes, calendar) VALUES
-                ('rem-001', 'Publish Amuse v1.0 release notes', 0, '2026-10-14T17:00:00-07:00', 'Include Linux and macOS build instructions', 'Tasks'),
-                ('rem-002', 'Rotate staging server SSH keys', 0, '2026-10-16T12:00:00-07:00', 'Update keys on node-alpha and staging-api', 'Ops');
-            )";
-            sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
-        }
+        // Correct the fake "connected" statuses older builds wrote for cloud connectors
+        sqlite3_exec(db_,
+            "UPDATE connectors SET status = 'available', last_used = 'never' "
+            "WHERE category = 'cloud' AND status = 'connected' AND id IN "
+            "('gmail','google_calendar','google_docs','slack','notion','github','whatsapp','linkedin','spotify');",
+            nullptr, nullptr, nullptr);
     }
 
     std::string getCurrentTimeAndEnvironment() {
@@ -2259,9 +2429,10 @@ private:
     }
 
     std::string listConnectors(const std::string &category) {
+        const bool filter = !category.empty() && category != "all";
         std::string sql = "SELECT id, name, category, status, permission, description, last_used FROM connectors ";
-        if (!category.empty() && category != "all") {
-            sql += "WHERE category = '" + jsonEscape(category) + "' ";
+        if (filter) {
+            sql += "WHERE category = ? ";
         }
         sql += "ORDER BY category ASC, name ASC;";
         sqlite3_stmt *stmt = nullptr;
@@ -2269,6 +2440,9 @@ private:
         out << "{\"connectors\":[";
         bool first = true;
         if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            if (filter) {
+                sqlite3_bind_text(stmt, 1, category.c_str(), -1, SQLITE_TRANSIENT);
+            }
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 if (!first) out << ",";
                 first = false;
@@ -2638,7 +2812,10 @@ private:
         time_t targetEpoch = 0;
         int secondsUntil = 0;
         std::string formattedTarget;
-        parseTargetTime(targetTimeStr, durationSec, targetEpoch, secondsUntil, formattedTarget);
+        if (!parseTargetTime(targetTimeStr, durationSec, targetEpoch, secondsUntil, formattedTarget)) {
+            return std::string("{\"error\":\"unparseable_time\",\"message\":\"Could not understand the time '\") +
+                   jsonEscape(targetTimeStr) + "'. Give a duration (e.g. duration_seconds: 900) or a clear time (e.g. '7:30 PM', 'in 20 minutes'). No alarm was set.\"}";
+        }
         if (secondsUntil < 1) secondsUntil = 1;
 
         std::string id = "alarm-" + std::to_string(std::time(nullptr)) + "-" + std::to_string(rand() % 1000);
@@ -2815,7 +2992,7 @@ private:
             sqlite3_finalize(stmt);
         }
 
-        std::string filePath = writeNoteMarkdownFile(title, dateStr, body);
+        std::string filePath = writeNoteMarkdownFile(title, dateStr, body, /*overwrite=*/true);
         sendDesktopNotification("📝 Amuse Note Saved", "Saved to " + filePath);
 
         emitRichCard({
@@ -2945,7 +3122,7 @@ private:
         }
 
         // Save as Markdown note draft as well
-        std::string draftPath = writeNoteMarkdownFile("LinkedIn_Post_Draft", nowStr, content);
+        std::string draftPath = writeNoteMarkdownFile("LinkedIn_Post_Draft", nowStr, content, true);
         if (!attachedImage.empty()) {
             copyImageToClipboard(attachedImage);
         } else {
@@ -2968,7 +3145,10 @@ private:
         int secondsUntil = 0;
         if (!scheduleTime.empty()) {
             time_t targetEpoch = 0;
-            parseTargetTime(scheduleTime, 0, targetEpoch, secondsUntil, scheduledTarget);
+            if (!parseTargetTime(scheduleTime, 0, targetEpoch, secondsUntil, scheduledTarget)) {
+                return std::string("{\"error\":\"unparseable_time\",\"message\":\"Could not understand schedule_time '\") +
+                       jsonEscape(scheduleTime) + "'. Nothing was scheduled.\"}";
+            }
             setAlarmOrTimer("Publish " + platform + " Post", scheduleTime, 0);
             createCalendarEvent("Publish " + platform + " Post", scheduledTarget, "", shareUrl, content);
         }
@@ -3046,10 +3226,32 @@ private:
         std::string body = args.getString("body", "");
         std::string attachmentPath = args.getString("attachment_path", "");
 
+        if (action == "send") {
+            // Sending real email requires explicit per-call confirmation
+            if (!args.getBool("confirm_send", false)) {
+                std::ostringstream preview;
+                preview << "{"
+                        << "\"success\":false,"
+                        << "\"status\":\"needs_confirmation\","
+                        << "\"message\":\"This email has NOT been sent. Show the user this exact draft and ask for explicit confirmation. Then call email_action again with the same arguments plus confirm_send: true.\","
+                        << "\"draft\":{"
+                        << "\"to\":\"" << jsonEscape(to) << "\","
+                        << "\"subject\":\"" << jsonEscape(subject) << "\","
+                        << "\"body\":\"" << jsonEscape(body) << "\","
+                        << "\"attachment_path\":\"" << jsonEscape(attachmentPath) << "\""
+                        << "}}";
+                return preview.str();
+            }
+            // Attachments must live in the user's home and not in sensitive dirs
+            if (!attachmentPath.empty() && !isPathAllowedForSharing(attachmentPath)) {
+                return "{\"success\":false,\"error\":\"attachment_blocked\",\"message\":\"Attachment path is outside the allowed area (must be inside the user's home directory and not in a sensitive location like ~/.ssh, ~/.gnupg, ~/.aws, ~/.amuse or ~/Library).\"}";
+            }
+        }
+
         std::string scriptPath = getRepoRootDir() + "/scripts/email_connector.py";
-        std::string cmd = "/usr/bin/python3 " + shellSingleQuote(scriptPath) + " " +
-                          shellSingleQuote(argsJson.empty() ? "{\"action\":\"search\"}" : argsJson) + " 2>/dev/null";
-        std::string outJson = runCommandCapture(cmd, 49152);
+        std::string outJson = runProcessWithIO({"/usr/bin/python3", scriptPath, "-"},
+                                               argsJson.empty() ? "{\"action\":\"search\"}" : argsJson,
+                                               49152, 45);
         while (!outJson.empty() && (outJson.back() == '\n' || outJson.back() == '\r')) {
             outJson.pop_back();
         }
@@ -3061,9 +3263,9 @@ private:
             std::string searchLabel = !query.empty() ? query : (!subject.empty() ? subject : "Latest Inbox Messages");
             emitRichCard({
                 "connector",
-                "✉️ Real Email Connector (Thunderbird + IMAP)",
+                "✉️ Email Connector (Thunderbird + IMAP)",
                 action,
-                "On-Device Thunderbird (32,910 emails: rkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) + Hosted IMAP",
+                "On-Device Thunderbird database + connected IMAP accounts",
                 "Queried real emails for: " + searchLabel + "\n(Never hallucinated — read directly from Thunderbird global-messages-db.sqlite & connected IMAP accounts.)",
                 "https://mail.google.com/",
                 "Open Mail in Browser"
@@ -3076,7 +3278,7 @@ private:
         std::string nowStr = currentReadableTimestamp();
         const char *sql =
             "INSERT INTO emails (id, sender, recipient, subject, body, date, status) "
-            "VALUES (?, 'rabimba@shin.so', ?, ?, ?, ?, ?);";
+            "VALUES (?, 'me', ?, ?, ?, ?, ?);";
         sqlite3_stmt *stmt = nullptr;
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
@@ -3128,9 +3330,8 @@ private:
                 << "}";
 
         std::string scriptPath = getRepoRootDir() + "/scripts/email_connector.py";
-        std::string cmd = "/usr/bin/python3 " + shellSingleQuote(scriptPath) + " " +
-                          shellSingleQuote(payload.str()) + " 2>/dev/null";
-        std::string outJson = runCommandCapture(cmd, 16384);
+        std::string outJson = runProcessWithIO({"/usr/bin/python3", scriptPath, "-"},
+                                               payload.str(), 16384, 30);
         while (!outJson.empty() && (outJson.back() == '\n' || outJson.back() == '\r')) {
             outJson.pop_back();
         }
@@ -3253,7 +3454,7 @@ private:
             << "\"success\":" << (ok ? "true" : "false") << ","
             << "\"file_path\":\"" << jsonEscape(filePath) << "\","
             << "\"copied_image_to_clipboard\":" << (ok ? "true" : "false") << ","
-            << "\"streamed_to_gemini_vision\":true,"
+            << "\"streamed_to_gemini_vision\":" << (ok && hasImageFrameSink() ? "true" : "false") << ","
             << "\"active_window\":\"" << jsonEscape(activeWin) << "\","
             << "\"size_bytes\":" << (ok ? st.st_size : 0)
             << "}";
@@ -3268,6 +3469,45 @@ private:
 
     std::string manageFiles(const std::string &action, const std::string &rawPath, const std::string &query) {
         std::string path = expandTilde(rawPath);
+
+        // Path guard: operate only inside the user's home (or /tmp), never in
+        // sensitive locations. Prevents reading ~/.ssh or overwriting ~/.bashrc.
+        auto pathAllowed = [&](const std::string &p, bool forWrite) -> std::string {
+            char resolved[PATH_MAX];
+            std::string rp;
+            if (realpath(p.c_str(), resolved)) {
+                rp = resolved;
+            } else {
+                rp = p; // may not exist yet (write of new file)
+            }
+            std::string home = getHomeDir();
+            bool inHome = rp.rfind(home + "/", 0) == 0;
+            bool inTmp = rp.rfind("/tmp/", 0) == 0;
+            if (!inHome && !inTmp) return "path must be inside the user's home directory or /tmp";
+            static const char *deny[] = {
+                "/.ssh", "/.gnupg", "/.aws", "/.config/gcloud", "/.amuse/custom_tools",
+                "/.kube", "/.docker", "/.local/share/keyrings", "/Library"
+            };
+            std::string rel = inHome ? rp.substr(home.size()) : "";
+            for (const char *d : deny) {
+                if (!rel.empty() && (rel == d || rel.rfind(std::string(d) + "/", 0) == 0)) {
+                    return std::string("path is in a protected location (") + d + ")";
+                }
+            }
+            if (forWrite && inHome) {
+                // Never overwrite dotfiles directly under $HOME (.bashrc etc.)
+                std::string base = rp.substr(home.size() + 1);
+                if (base.find('/') == std::string::npos && !base.empty() && base[0] == '.') {
+                    return "refusing to modify a dotfile directly under the home directory";
+                }
+            }
+            return "";
+        };
+        bool isWrite = (action == "write" || action == "move" || action == "trash");
+        std::string guard = pathAllowed(path, isWrite);
+        if (!guard.empty()) {
+            return "{\"error\":\"path_blocked\",\"message\":\"" + jsonEscape(guard) + "\"}";
+        }
 
         if (action == "list") {
             DIR *dir = opendir(path.c_str());
@@ -3353,14 +3593,36 @@ private:
 
     std::string webSearchAndFetch(const std::string &queryOrUrl) {
         if (queryOrUrl.find("http://") == 0 || queryOrUrl.find("https://") == 0) {
+            // SSRF guard: refuse loopback, link-local and private-network targets
+            std::string lower = queryOrUrl;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            auto hostStart = lower.find("://") + 3;
+            auto hostEnd = lower.find('/', hostStart);
+            std::string host = lower.substr(hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart);
+            auto atPos = host.rfind('@'); // strip userinfo
+            if (atPos != std::string::npos) host = host.substr(atPos + 1);
+            auto colonPos = host.rfind(':');
+            if (colonPos != std::string::npos && host.find(':') == colonPos) host = host.substr(0, colonPos);
+            static const char *blocked[] = {
+                "localhost", "127.", "0.0.0.0", "::1", "10.", "192.168.", "169.254.",
+                "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.",
+                "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                "172.30.", "172.31.", "metadata.google", "100.100."
+            };
+            for (const char *b : blocked) {
+                if (host == b || host.rfind(b, 0) == 0 || host.find(b) == (host.size() > strlen(b) ? host.size() - strlen(b) : 0)) {
+                    return "{\"error\":\"url_blocked\",\"message\":\"Refusing to fetch loopback/private/link-local addresses.\"}";
+                }
+            }
             std::string cmd = "curl -sL -m 8 " + shellSingleQuote(queryOrUrl) +
                               " | sed -e 's/<script[^>]*>.*<\\/script>//gI' -e 's/<style[^>]*>.*<\\/style>//gI' -e 's/<[^>]*>/ /g' | tr -s ' \\n\\t' ' ' | head -c 4000";
             std::string text = runCommandCapture(cmd, 4096);
             return "{\"url\":\"" + jsonEscape(queryOrUrl) + "\",\"content_excerpt\":\"" + jsonEscape(text) + "\"}";
         }
         std::string ddgUrl = "https://html.duckduckgo.com/html/?q=" + urlEncode(queryOrUrl);
+        // grep -P lookbehind with variable-length pattern is rejected by PCRE; use sed instead
         std::string cmd = "curl -sL -m 8 -A 'Mozilla/5.0' " + shellSingleQuote(ddgUrl) +
-                          " | grep -oP '(?<=class=\"result__snippet\"[^>]*>).*?(?=</a>|</td>|</div>)' 2>/dev/null | sed 's/<[^>]*>//g' | head -n 8";
+                          " | sed -n 's/.*class=\"result__snippet\"[^>]*>//p' | sed 's/<[^>]*>//g' | head -n 8";
         std::string snippets = runCommandCapture(cmd, 4096);
         if (snippets.empty()) {
             std::string fallbackCmd = "curl -sL -m 8 -A 'Mozilla/5.0' " + shellSingleQuote(ddgUrl) +
@@ -3375,7 +3637,10 @@ private:
         time_t targetEpoch = 0;
         int secondsUntil = 0;
         std::string formattedTarget;
-        parseTargetTime(targetTimeStr, 0, targetEpoch, secondsUntil, formattedTarget);
+        if (!parseTargetTime(targetTimeStr, 0, targetEpoch, secondsUntil, formattedTarget)) {
+            return std::string("{\"error\":\"unparseable_time\",\"message\":\"Could not understand the time '\") +
+                   jsonEscape(targetTimeStr) + "'. Give a clear time (e.g. '2026-10-15 09:00', 'tomorrow 8 AM'). No task was scheduled.\"}";
+        }
         if (secondsUntil < 1) secondsUntil = 1;
 
         std::string id = "task-" + std::to_string(std::time(nullptr)) + "-" + std::to_string(rand() % 1000);
@@ -3474,7 +3739,7 @@ private:
             }
             sqlite3_finalize(qstmt);
         }
-        std::string memPath = writeNoteMarkdownFile("Amuse_Active_Memory", nowStr, md.str());
+        std::string memPath = writeNoteMarkdownFile("Amuse_Active_Memory", nowStr, md.str(), true);
 
         emitRichCard({
             "note",
@@ -3546,7 +3811,7 @@ private:
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
-            std::string planPath = writeNoteMarkdownFile("Action_Plan_" + goal, nowStr, steps);
+            std::string planPath = writeNoteMarkdownFile("Action_Plan_" + goal, nowStr, steps, true);
             emitRichCard({
                 "note",
                 "📋 Action Plan: " + goal,
@@ -3617,8 +3882,8 @@ private:
             sqlite3_finalize(stmt);
         }
 
-        std::string runner = isPy ? "/usr/bin/python3 " : "/bin/bash ";
-        std::string output = runCommandCapture(runner + shellSingleQuote(scriptPath) + " 2>&1", 8192);
+        // 30s hard timeout so a hanging script can't freeze every other tool
+        std::string output = runProcessWithIO({isPy ? "/usr/bin/python3" : "/bin/bash", scriptPath}, "", 8192, 30);
 
         emitRichCard({
             "connector",
@@ -4025,7 +4290,7 @@ public:
         } else if (type == "sendTextMessage") {
             std::string text = payload.getString("text", "");
             if (!text.empty()) {
-                std::cerr << "[Amuse] User text input from HUD: " << text << std::endl;
+                std::cerr << "[Amuse] User text input from HUD (" << text.size() << " chars)" << std::endl;
                 sendToNode("{\"type\":\"user_text_input\",\"text\":\"" + jsonEscape(text) + "\"}");
             }
         } else if (type == "openFile") {
@@ -4279,15 +4544,17 @@ private:
             std::string toolName = msg.getString("toolName", "");
             std::string argsJson = msg.getObjectJson("arguments", "{}");
 
-            std::cerr << "[Amuse] Executing local tool: " << toolName << "(" << argsJson << ")" << std::endl;
+            std::cerr << "[Amuse] Executing local tool: " << toolName << "(" << sanitizeArgsForLog(argsJson) << ")" << std::endl;
             setStatus("thinking", "Working with " + toolName + "...");
 
             std::thread([this, callId, toolName, argsJson]() {
                 std::string resultJson = LocalConnectorsManager::instance().executeTool(toolName, argsJson);
                 appendTranscript("tool", "Connected & executed " + toolName, toolName);
+                // Output as an escaped JSON string (never raw-embedded): truncated or
+                // malformed tool output must not break the IPC line protocol.
                 std::string resp = "{\"type\":\"tool_call_response\",\"callId\":\"" +
                                    jsonEscape(callId) + "\",\"toolName\":\"" +
-                                   jsonEscape(toolName) + "\",\"output\":" + resultJson + "}";
+                                   jsonEscape(toolName) + "\",\"output\":\"" + jsonEscape(resultJson) + "\"}";
                 std::cerr << "[Amuse] Tool response ready (" << resultJson.size() << " bytes)" << std::endl;
                 sendToNode(resp);
             }).detach();

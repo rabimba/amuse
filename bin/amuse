@@ -3,9 +3,10 @@ set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Ensure Node environment from NVM if present
+# Ensure Node environment from NVM if present (unset conflicting prefix first)
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
-  source "$HOME/.nvm/nvm.sh"
+  unset npm_config_prefix 2>/dev/null || true
+  source "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true
 fi
 
 BRIDGE="$DIR/bin/amuse-bridge"
@@ -32,17 +33,18 @@ case "$COMMAND" in
   config)
     shift
     if [ "$1" == "--key" ] && [ -n "$2" ]; then
-      node -e "
+      # Value passed via env, never interpolated into JS source (injection-safe)
+      AMUSE_SET_VALUE="$2" node -e "
         import('$DIR/src/js/config.mjs').then(m => {
-          m.saveConfig({ apiKey: '$2' });
+          m.saveConfig({ apiKey: process.env.AMUSE_SET_VALUE });
           console.log('API key saved successfully to ~/.amuse/config.json');
         });
       "
     elif [ "$1" == "--voice" ] && [ -n "$2" ]; then
-      node -e "
+      AMUSE_SET_VALUE="$2" node -e "
         import('$DIR/src/js/config.mjs').then(m => {
-          m.saveConfig({ voice: '$2' });
-          console.log('Voice set to $2 in ~/.amuse/config.json');
+          m.saveConfig({ voice: process.env.AMUSE_SET_VALUE });
+          console.log('Voice saved to ~/.amuse/config.json');
         });
       "
     else
@@ -61,23 +63,70 @@ case "$COMMAND" in
     echo "=========================================="
     echo "           AMUSE SYSTEM TEST             "
     echo "=========================================="
+    # Isolated HOME: connector tests must never touch real ~/.amuse state.
+    TEST_HOME="$(mktemp -d /tmp/amuse-test-home.XXXXXX)"
+    export HOME="$TEST_HOME"
+    NOHIT="zz-nohit-$(date +%s)"
+    FAILED=0
+
+    run_check() {
+      local label="$1"; shift
+      local tool="$1"; shift
+      local args="$1"; shift
+      echo ""
+      echo "==> $label"
+      local out
+      if ! out="$("$BRIDGE" call "$tool" "$args" 2>&1)"; then
+        echo "FAIL: bridge call errored: $out"
+        FAILED=1
+        return
+      fi
+      echo "$out" | head -c 400
+      echo ""
+      # Must be valid JSON and must not be an "Unknown tool" error
+      if ! printf '%s' "$out" | node -e "
+        let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+          try{const j=JSON.parse(s); if(typeof j.error==='string'&&j.error.startsWith('Unknown tool')) process.exit(1); process.exit(0);}catch{process.exit(1)}
+        });"; then
+        echo "FAIL: invalid JSON or unknown tool"
+        FAILED=1
+      fi
+    }
+
+    run_check "1. Messages (read-only, no-hit query)" search_messages "{\"query\": \"$NOHIT\", \"limit\": 2}"
+    run_check "2. Notes (read-only, no-hit query)" search_notes "{\"query\": \"$NOHIT\", \"limit\": 2}"
+    run_check "3. Calendar (read-only)" get_calendar_events '{"days_ahead": 7}'
+    run_check "4. Contacts (read-only)" search_contacts "{\"name\": \"$NOHIT\"}"
+
     echo ""
-    echo "1. Testing iMessage Connector:"
-    "$BRIDGE" call get_recent_messages '{"limit": 2}'
+    echo "==> 5. Tool declarations"
+    TOOLS_JSON="$("$BRIDGE" tools)"
+    TOOL_COUNT="$(printf '%s' "$TOOLS_JSON" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).length)}catch{console.log(0)}})")"
+    echo "Exposed tools: $TOOL_COUNT"
+    if [ "$TOOL_COUNT" -lt 1 ]; then
+      echo "FAIL: no tool declarations"
+      FAILED=1
+    fi
+
     echo ""
-    echo "2. Testing Notes Connector:"
-    "$BRIDGE" call search_notes '{"limit": 2}'
+    echo "==> 6. Safety gates (dangerous tools must refuse without opt-in flags)"
+    GATE_OUT="$("$BRIDGE" call computer_control_action '{"action":"run_command","target":"echo pwned"}' 2>&1 || true)"
+    if printf '%s' "$GATE_OUT" | grep -q 'safety_gate'; then
+      echo "PASS: run_command gated"
+    elif printf '%s' "$GATE_OUT" | grep -q 'Unknown tool'; then
+      echo "PASS: run_command not present on this platform"
+    else
+      echo "FAIL: run_command executed without AMUSE_ALLOW_SHELL: $GATE_OUT"
+      FAILED=1
+    fi
+
+    rm -rf "$TEST_HOME"
     echo ""
-    echo "3. Testing Calendar Connector:"
-    "$BRIDGE" call get_calendar_events '{"days_ahead": 7}'
-    echo ""
-    echo "4. Testing Contacts Connector:"
-    "$BRIDGE" call search_contacts '{"name": "test"}'
-    echo ""
-    echo "5. Testing Gemini Live Tool Declarations:"
-    "$BRIDGE" tools | grep '"name"' || true
-    echo ""
-    echo "All local connector bridges executed successfully!"
+    if [ "$FAILED" -ne 0 ]; then
+      echo "AMUSE SYSTEM TEST: FAILED"
+      exit 1
+    fi
+    echo "AMUSE SYSTEM TEST: PASSED"
     ;;
   e2e|all)
     shift || true

@@ -77,6 +77,7 @@ function handleNativeMessage(msg) {
       client.sendToolResponse(msg.callId, msg.output, msg.toolName);
       break;
     default:
-      console.log('[AmuseOrchestrator] Unhandled message:', msg.type);
+      // stderr only — stdout is the IPC channel to the native host
+      console.error('[AmuseOrchestrator] Unhandled message:', msg.type);
   }
 }

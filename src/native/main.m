@@ -13,11 +13,16 @@
     NSPipe *_nodeStdinPipe;
     NSPipe *_nodeStdoutPipe;
     NSTask *_nodeTask;
+    NSMutableData *_nodeReadBuffer;
+    NSLock *_nodeWriteLock;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     NSLog(@"[Amuse] Native controller launching...");
-    
+
+    _nodeReadBuffer = [[NSMutableData alloc] init];
+    _nodeWriteLock = [[NSLock alloc] init];
+
     NSString *bundleRoot = [[NSBundle mainBundle] bundlePath];
     NSString *htmlPath = [bundleRoot stringByAppendingPathComponent:@"Contents/Resources/web/index.html"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:htmlPath]) {
@@ -131,12 +136,26 @@
     readHandle.readabilityHandler = ^(NSFileHandle *handle) {
         NSData *data = [handle availableData];
         if (data.length == 0) return;
-        
-        NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        NSArray *lines = [raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-        for (NSString *line in lines) {
-            if (line.length == 0) continue;
-            [self handleNodeMessageLine:line];
+
+        // Line-delimited JSON: buffer partial reads so lines split across
+        // two reads are not dropped (was losing audio_output_chunk payloads).
+        @synchronized (_nodeReadBuffer) {
+            [_nodeReadBuffer appendData:data];
+            while (YES) {
+                const uint8_t *bytes = (const uint8_t *)_nodeReadBuffer.bytes;
+                NSUInteger len = _nodeReadBuffer.length;
+                NSUInteger nlIdx = NSNotFound;
+                for (NSUInteger i = 0; i < len; i++) {
+                    if (bytes[i] == '\n') { nlIdx = i; break; }
+                }
+                if (nlIdx == NSNotFound) break;
+                NSData *lineData = [_nodeReadBuffer subdataWithRange:NSMakeRange(0, nlIdx)];
+                [_nodeReadBuffer replaceBytesInRange:NSMakeRange(0, nlIdx + 1) withBytes:NULL length:0];
+                if (lineData.length == 0) continue;
+                NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
+                if (line.length == 0) continue;
+                [self handleNodeMessageLine:line];
+            }
         }
     };
     
@@ -154,10 +173,14 @@
     if (data) {
         NSMutableData *lineData = [NSMutableData dataWithData:data];
         [lineData appendBytes:"\n" length:1];
+        // Serialized: audio thread + tool threads write concurrently
+        [_nodeWriteLock lock];
         @try {
             [[_nodeStdinPipe fileHandleForWriting] writeData:lineData];
         } @catch (NSException *ex) {
             NSLog(@"[Amuse] Error writing to Node: %@", ex);
+        } @finally {
+            [_nodeWriteLock unlock];
         }
     }
 }
@@ -209,6 +232,7 @@
                 [self sendToNode:@{
                     @"type": @"tool_call_response",
                     @"callId": callId,
+                    @"toolName": toolName,
                     @"output": resJson
                 }];
             });

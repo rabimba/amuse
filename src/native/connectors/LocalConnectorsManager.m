@@ -69,8 +69,12 @@
             df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
             df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
             
-            NSDate *start = [df dateFromString:args[@"start_iso"]] ?: [NSDate date];
-            NSDate *end = [df dateFromString:args[@"end_iso"]] ?: [start dateByAddingTimeInterval:3600];
+            NSDate *start = args[@"start_iso"] ? [df dateFromString:args[@"start_iso"]] : nil;
+            if (!start) {
+                return [self jsonStringFromObject:@{@"error": @"Invalid or missing start_iso. Use full ISO 8601 with timezone offset, e.g. 2026-10-15T09:00:00-07:00"}];
+            }
+            NSDate *end = args[@"end_iso"] ? [df dateFromString:args[@"end_iso"]] : nil;
+            if (!end) end = [start dateByAddingTimeInterval:3600];
             
             NSDictionary *res = [[CalendarConnector sharedConnector] createEventWithTitle:title startDate:start endDate:end notes:notes location:location];
             return [self jsonStringFromObject:res];
@@ -86,8 +90,12 @@
             NSDate *dueDate = nil;
             if (args[@"due_iso"]) {
                 NSDateFormatter *df = [[NSDateFormatter alloc] init];
+                df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
                 df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
                 dueDate = [df dateFromString:args[@"due_iso"]];
+                if (!dueDate) {
+                    return [self jsonStringFromObject:@{@"error": @"Invalid due_iso. Use full ISO 8601 with timezone offset, e.g. 2026-10-15T09:00:00-07:00"}];
+                }
             }
             NSDictionary *res = [[CalendarConnector sharedConnector] createReminderWithTitle:title dueDate:dueDate notes:notes];
             return [self jsonStringFromObject:res];

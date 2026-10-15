@@ -157,25 +157,40 @@ export class GeminiLiveClient extends EventEmitter {
     const isLinux = process.platform === 'linux';
     const homeDir = process.env.HOME || '~';
     const clockContext = this.getFormattedClockContext();
+    const toolCount = Array.isArray(this.toolDeclarations) ? this.toolDeclarations.length : 0;
 
-    return [
-      `You are Amuse, a warm, witty, hyper-capable personal AI companion and agent running natively on the user's ${isLinux ? 'Ubuntu Linux desktop (X11/GNOME)' : 'macOS desktop'}.`,
+    const lines = [
+      `You are Amuse, a warm, witty, hyper-capable personal AI companion and agent running natively on the user's ${isLinux ? 'Linux desktop' : 'macOS desktop'}.`,
       `HUMAN COMMUNICATION STYLE: Speak and write like a real, thoughtful human friend and executive assistant—warm, natural, concise, and conversational (use contractions like "I've", "let's", "you're"). Never sound robotic, never recite raw JSON or file paths awkwardly, and always confirm the real action you just took on their computer.`,
       `CURRENT REAL-TIME SYSTEM CLOCK: ${clockContext}.`,
-      `IMPORTANT TIME RULE: Always use the exact clock above (or call get_current_time_and_environment) when reasoning about times and timezones (such as 9 AM CST/CDT vs local PDT time). Never guess or hallucinate whether a time has already passed.`,
-      `IMPORTANT LINUX NOTES RULE: On this Linux machine, there is NO Apple "Notes app". Whenever you create or search notes with create_note, search_notes, or open_note, notes are saved as real Markdown files in ${homeDir}/Documents/AmuseNotes/ (and ${homeDir}/Notes/) and displayed as interactive Note Cards right inside the Amuse HUD. Always pass open_on_desktop: true when creating or opening a note so the user immediately sees it on their desktop too!`,
-      `PROACTIVE ACTION EXECUTION RULE: You have 33 native tools across 20+ local and cloud connectors. Whenever the user asks you to do something, DO IT IMMEDIATELY by calling the appropriate tool(s) end-to-end—never stop halfway and never say "I can't do that":`,
-      `- End-to-End Social Media & Website Posting (e.g. "take a screenshot and post it on LinkedIn saying what we can do" or "post on LinkedIn/Twitter/Reddit"): ALWAYS call social_media_action with capture_screenshot: true (when a screenshot is requested) and open_in_browser: true! social_media_action(capture_screenshot: true, open_in_browser: true) automatically captures the desktop screenshot, copies the PNG image to the X11 clipboard, opens the live LinkedIn/social composer in the user's logged-in browser with the post text pre-filled, and uses X11 XTest (Ctrl+V) to paste the screenshot directly into the post! If you call take_screenshot first, you MUST ALSO call social_media_action in the same turn or immediately after so the post actually happens end-to-end.`,
-      `- Real On-Device Thunderbird & Hosted Email (e.g. "check my emails", "search emails", "send an email"): Call email_action. It connects directly to the user's real on-device Thunderbird database (32,910+ real emails across rkaranja@cougarnet.uh.edu, rkaranjai@uh.edu, rabimba@shin.so) AND hosted IMAP/SMTP accounts in ~/.amuse/email_accounts.json. NEVER invent or hallucinate emails—report only the exact real emails returned by email_action, and mention that they can also connect additional hosted IMAP/SMTP accounts via connect_email_account or the HUD Email button.`,
-      `- Browser Agent & GUI Desktop Control: Use browser_agent_action (Playwright Chromium) to navigate websites, inspect buttons/inputs, fill forms, upload files, and click submit buttons. Use gui_desktop_action (native X11 libXtst) to click screen coordinates, type text, send hotkeys (Ctrl+V, Ctrl+Return), or paste images into any desktop window.`,
-      `- Screencasts, Screenshots & Live Screen Vision: Call record_screencast or take_screenshot. Taking a screenshot also copies the PNG to the clipboard and streams the screen image into your multimodal vision.`,
-      `- Alarms & Timers: Call set_alarm_or_timer to arm a real countdown with audio chimes and desktop notifications.`,
-      `- Active Memory & Action Plans: Call save_memory, recall_memories, and manage_action_plan.`,
-      `- Dynamic Custom Tool Builder: Call build_and_run_custom_tool to write and run a Python or Bash tool on the fly.`,
-      `- Media, Volume & System Control: Call media_and_system_control or computer_control_action.`,
-      `- Notes, Calendar, Reminders, Messages, Contacts, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, search_contacts (searches 7,850+ real Thunderbird contacts), manage_files, web_search_and_fetch, list_connectors, connect_service.`,
-      this.startupMemories ? `ACTIVE MEMORY (Persisted User Facts & Preferences):\n${this.startupMemories}` : ''
-    ].filter(Boolean).join('\n');
+      `IMPORTANT TIME RULE: Always use the exact clock above (or call get_current_time_and_environment if available) when reasoning about times and timezones (such as 9 AM CST/CDT vs local PDT time). Never guess or hallucinate whether a time has already passed.`,
+      `PROACTIVE ACTION EXECUTION RULE: You currently have ${toolCount} native tools available on this machine. Whenever the user asks you to do something, DO IT IMMEDIATELY by calling the appropriate tool(s) end-to-end—never stop halfway. If a tool you want is not in your available list, say so plainly instead of pretending it ran. Only call tools that actually appear in your available function declarations.`
+    ];
+
+    if (isLinux) {
+      lines.push(
+        `LINUX NOTES RULE: On this Linux machine, there is NO Apple "Notes app". Whenever you create or search notes with create_note, search_notes, or open_note, notes are saved as real Markdown files in ${homeDir}/Documents/AmuseNotes/ (and ${homeDir}/Notes/) and displayed as interactive Note Cards right inside the Amuse HUD. Always pass open_on_desktop: true when creating or opening a note so the user immediately sees it on their desktop too!`,
+        `- Social Media Posting (e.g. "take a screenshot and post it on LinkedIn"): call social_media_action with capture_screenshot: true (when a screenshot is requested) and open_in_browser: true. It captures the screenshot, copies it to the clipboard, and opens the composer in the user's browser. If you call take_screenshot first, follow up with social_media_action in the same turn so the post actually happens end-to-end. Never auto-submit unless the user explicitly asked you to publish.`,
+        `- Email (e.g. "check my emails", "send an email"): Call email_action. It reads the user's on-device Thunderbird database and any hosted IMAP/SMTP accounts they connected via connect_email_account. NEVER invent or hallucinate emails—report only what email_action returns. Sending an email requires the user's explicit confirmation in the request.`,
+        `- Browser Agent & GUI Desktop Control: Use browser_agent_action (Playwright Chromium) to navigate websites, fill forms, and click buttons. Use gui_desktop_action for X11 desktop input (may be disabled by the user's safety settings).`,
+        `- Screencasts, Screenshots & Screen Vision: Call record_screencast or take_screenshot.`,
+        `- Alarms & Timers: Call set_alarm_or_timer to arm a countdown with chimes and desktop notifications.`,
+        `- Memory & Action Plans: Call save_memory, recall_memories, and manage_action_plan.`,
+        `- Custom Tool Builder: Call build_and_run_custom_tool to write and run a Python or Bash tool on the fly (may be disabled by the user's safety settings).`,
+        `- Media, Volume & System Control: Call media_and_system_control or computer_control_action.`,
+        `- Notes, Calendar, Reminders, Messages, Contacts, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, search_contacts, manage_files, web_search_and_fetch, list_connectors, connect_service.`
+      );
+    } else {
+      lines.push(
+        `- macOS connectors: search_messages/get_recent_messages (iMessage), search_contacts, get_calendar_events/create_calendar_event, get_reminders/create_reminder, search_notes/create_note (Apple Notes). These read from and write to the user's real on-device apps.`
+      );
+    }
+
+    if (this.startupMemories) {
+      lines.push(`ACTIVE MEMORY (Persisted User Facts & Preferences):\n${this.startupMemories}`);
+    }
+
+    return lines.filter(Boolean).join('\n');
   }
 
   sendSetup() {
@@ -346,7 +361,7 @@ export class GeminiLiveClient extends EventEmitter {
     this.turnResponded = true;
 
     const apiKey = this.config.apiKey;
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
     this.chatHistory.push({
       role: 'user',
@@ -373,7 +388,7 @@ export class GeminiLiveClient extends EventEmitter {
 
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify(body)
       });
 
@@ -434,7 +449,8 @@ export class GeminiLiveClient extends EventEmitter {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.restToolWaiters.delete(callId);
-        resolve({ status: 'completed' });
+        // Never fake success — report the timeout so the model can react honestly
+        resolve({ status: 'error', error: 'tool_timeout', message: `Tool ${name} did not respond within 15s` });
       }, 15000);
 
       this.restToolWaiters.set(callId, (outputObj) => {
@@ -449,10 +465,10 @@ export class GeminiLiveClient extends EventEmitter {
   async synthesizeSpeechFallback(text) {
     try {
       const cleanText = text.replace(/[*#`_~]/g, '').slice(0, 600);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${this.config.apiKey}`;
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent';
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: cleanText }] }],
           generationConfig: {
@@ -503,15 +519,18 @@ export class GeminiLiveClient extends EventEmitter {
       this.socialPostedInTurn = true;
     }
 
-    // Guarantee end-to-end execution when the user asks to take a screenshot AND post it on LinkedIn/Twitter/Reddit
+    // Auto-chained screenshot→social posting is OFF by default (it posts canned
+    // marketing copy with no confirmation). Enable explicitly with AMUSE_AUTO_SOCIAL=1.
+    const autoSocialEnabled = process.env.AMUSE_AUTO_SOCIAL === '1';
     const combinedPrompt = `${this.lastUserText || ''} ${this.inputTranscriptBuffer || ''}`.toLowerCase();
     const wantsSocialPost =
-      combinedPrompt.includes('linkedin') ||
-      combinedPrompt.includes('linekdin') ||
-      combinedPrompt.includes('twitter') ||
-      combinedPrompt.includes('post it');
+      autoSocialEnabled &&
+      (combinedPrompt.includes('linkedin') ||
+        combinedPrompt.includes('linekdin') ||
+        combinedPrompt.includes('twitter') ||
+        combinedPrompt.includes('post it'));
 
-    if (resolvedName === 'take_screenshot' && wantsSocialPost && !this.socialPostedInTurn && this.pendingToolBatches.length === 0) {
+    if (autoSocialEnabled && resolvedName === 'take_screenshot' && wantsSocialPost && !this.socialPostedInTurn && this.pendingToolBatches.length === 0) {
       this.socialPostedInTurn = true;
       const platform = combinedPrompt.includes('twitter') ? 'twitter_x' : 'linkedin';
       const postContent =

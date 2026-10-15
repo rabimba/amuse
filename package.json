@@ -1,7 +1,7 @@
 {
   "name": "amuse",
   "version": "1.0.0",
-  "description": "**Amuse** is a personal AI agent for macOS powered by the **Google Gemini Multimodal Live API** through **Google AI Studio**.",
+  "description": "Amuse — self-hosted personal AI agent for macOS and Linux (Muse-parity rebuild in progress; see docs/superpowers/specs/2026-10-14-amuse-muse-parity-design.md).",
   "main": "src/js/index.mjs",
   "directories": {
     "example": "example"
