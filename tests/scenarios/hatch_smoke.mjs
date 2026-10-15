@@ -117,6 +117,62 @@ async function runMockOpenAI() {
   }
 }
 
+// Text-mode (no native tool calling) full-loop verification
+async function runMockTextMode() {
+  const http = await import('node:http');
+  const requests = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      requests.push(JSON.parse(body));
+      const round = requests.length;
+      res.setHeader('Content-Type', 'application/json');
+      if (round === 1) {
+        check('text-mode: no native tools field sent', !('tools' in requests[0]));
+        const sys = requests[0].messages?.find(m => m.role === 'system');
+        check('text-mode: system prompt carries tool instructions',
+          !!sys && sys.content.includes('```tool_call') && sys.content.includes('search_messages'));
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: 'Let me check.\n```tool_call\n{"name": "search_messages", "args": {"query": "' + NOHIT + '", "limit": 1}}\n```'
+            },
+            finish_reason: 'stop'
+          }]
+        }));
+      } else {
+        const toolMsg = requests[round - 1].messages?.find(m => m.role === 'tool' && m.tool_call_id?.startsWith('txt-'));
+        check('text-mode: parsed call executed and round-tripped', !!toolMsg);
+        res.end(JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'SMOKE_OK: nothing matched.' }, finish_reason: 'stop' }]
+        }));
+      }
+    });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      path.join(ROOT, 'packages/hatch/bin/hatch.mjs'), 'ask', PROMPT
+    ], {
+      timeout: 120000,
+      env: {
+        ...process.env, HOME: TEST_HOME,
+        AMUSE_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'mock-key',
+        OPENAI_BASE_URL: `http://127.0.0.1:${port}`,
+        OPENAI_MODEL: 'mock-model',
+        AMUSE_TOOL_MODE: 'text'
+      }
+    });
+    check('text-mode: final answer returned', stdout.includes('SMOKE_OK'), stdout.slice(0, 200));
+  } finally {
+    srv.close();
+  }
+}
+
 console.log('hatch smoke test (isolated HOME: ' + TEST_HOME + ')\n');
 
 try {
@@ -124,6 +180,13 @@ try {
 } catch (err) {
   const stderr = err.stderr ? `\n  stderr: ${String(err.stderr).slice(0, 400)}` : '';
   check('mock openai-compatible loop', false, String(err.message).slice(0, 200) + stderr);
+}
+
+try {
+  await runMockTextMode();
+} catch (err) {
+  const stderr = err.stderr ? `\n  stderr: ${String(err.stderr).slice(0, 400)}` : '';
+  check('mock text-mode loop', false, String(err.message).slice(0, 200) + stderr);
 }
 
 if (hasGemini) {

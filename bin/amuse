@@ -47,14 +47,35 @@ case "$COMMAND" in
           console.log('Voice saved to ~/.amuse/config.json');
         });
       "
+    elif [ "$1" == "--provider" ] && [ -n "$2" ]; then
+      AMUSE_SET_VALUE="$2" node -e "
+        import('$DIR/src/js/config.mjs').then(m => {
+          m.saveConfig({ provider: process.env.AMUSE_SET_VALUE });
+          console.log('Provider saved (gemini|openai): ' + process.env.AMUSE_SET_VALUE);
+        });
+      "
+    elif [ "$1" == "--openai-key" ] || [ "$1" == "--openai-base-url" ] || [ "$1" == "--openai-model" ] || [ "$1" == "--openai-tool-mode" ]; then
+      if [ -z "${2:-}" ]; then echo "missing value"; exit 2; fi
+      FIELD="$1" AMUSE_SET_VALUE="$2" node -e "
+        import('$DIR/src/js/config.mjs').then(m => {
+          const map = { '--openai-key': 'openaiApiKey', '--openai-base-url': 'openaiBaseUrl', '--openai-model': 'openaiModel', '--openai-tool-mode': 'openaiToolMode' };
+          m.saveConfig({ [map[process.env.FIELD]]: process.env.AMUSE_SET_VALUE });
+          console.log('Saved ' + map[process.env.FIELD]);
+        });
+      "
     else
       node -e "
         import('$DIR/src/js/config.mjs').then(m => {
           const cfg = m.loadConfig();
           console.log('Current Amuse Configuration:');
-          console.log('  Model:', cfg.model);
+          console.log('  Provider:', cfg.provider || '(auto)');
+          console.log('  Gemini Model:', cfg.model);
           console.log('  Voice:', cfg.voice);
-          console.log('  API Key:', cfg.apiKey ? (cfg.apiKey.slice(0, 8) + '...' + cfg.apiKey.slice(-4)) : '(not set)');
+          console.log('  Gemini API Key:', cfg.apiKey ? (cfg.apiKey.slice(0, 8) + '...' + cfg.apiKey.slice(-4)) : '(not set)');
+          console.log('  OpenAI Base URL:', cfg.openaiBaseUrl || '(default api.openai.com/v1)');
+          console.log('  OpenAI Model:', cfg.openaiModel || '(default)');
+          console.log('  OpenAI API Key:', cfg.openaiApiKey ? '(set)' : '(not set)');
+          console.log('  OpenAI Tool Mode:', cfg.openaiToolMode || 'native');
         });
       "
     fi
@@ -140,6 +161,11 @@ case "$COMMAND" in
     echo "  amuse e2e                    Run the complete end-to-end build, test, and live HUD pipeline"
     echo "  amuse config --key <KEY>     Set your Google AI Studio Gemini API Key"
     echo "  amuse config --voice <VOICE> Set Gemini Live voice (Puck, Charon, Kore, Fenrir, Aoede)"
+    echo "  amuse config --provider <gemini|openai>"
+    echo "  amuse config --openai-key <KEY>            OpenAI-compatible endpoint key"
+    echo "  amuse config --openai-base-url <URL>       e.g. http://localhost:11434/v1 (Ollama)"
+    echo "  amuse config --openai-model <MODEL>        Model name on that endpoint"
+    echo "  amuse config --openai-tool-mode <native|text>   'text' for endpoints without native tool calling"
     echo "  amuse test                   Run diagnostics on local connectors"
     echo "  amuse tools                  List Gemini tool declarations"
     echo "  amuse call <name> [json]     Directly invoke a local connector tool"

@@ -19,7 +19,10 @@ export function loadHatchConfig() {
     openai: {
       apiKey: process.env.OPENAI_API_KEY || file.openaiApiKey || '',
       model: process.env.OPENAI_MODEL || file.openaiModel || 'gpt-4o-mini',
-      baseUrl: (process.env.OPENAI_BASE_URL || file.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')
+      baseUrl: (process.env.OPENAI_BASE_URL || file.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/$/, ''),
+      // 'native' = OpenAI tool calling; 'text' = model emits ```tool_call blocks
+      // (for local/compatible endpoints without native tool support)
+      toolMode: process.env.AMUSE_TOOL_MODE || file.openaiToolMode || 'native'
     }
   };
 

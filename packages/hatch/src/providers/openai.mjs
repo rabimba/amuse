@@ -6,7 +6,47 @@ export class OpenAIProvider {
     this.apiKey = cfg.apiKey;
     this.model = cfg.model;
     this.baseUrl = cfg.baseUrl;
+    this.toolMode = cfg.toolMode || 'native';
     this.name = 'openai';
+  }
+
+  // In text mode we describe tools in the system prompt and parse fenced blocks back.
+  toolInstructions(tools) {
+    if (!tools?.length) return '';
+    const specs = tools.map(t =>
+      `- ${t.name}: ${t.description}\n  parameters JSON Schema: ${JSON.stringify(t.parameters)}`
+    ).join('\n');
+    return [
+      '',
+      'TOOLS: You can call tools by emitting a fenced block exactly like:',
+      '```tool_call',
+      '{"name": "tool_name", "args": { ... }}',
+      '```',
+      'Emit one block per call. After the user relays the tool result, continue.',
+      'Available tools:',
+      specs
+    ].join('\n');
+  }
+
+  parseTextToolCalls(text) {
+    const toolCalls = [];
+    const re = /```tool_call\s*\n([\s\S]*?)```/g;
+    let m;
+    let clean = text || '';
+    while ((m = re.exec(text)) !== null) {
+      try {
+        const obj = JSON.parse(m[1]);
+        if (obj && typeof obj.name === 'string') {
+          toolCalls.push({
+            id: `txt-${Date.now()}-${toolCalls.length}`,
+            name: obj.name,
+            args: obj.args || {}
+          });
+        }
+      } catch { /* malformed block — leave in text */ }
+    }
+    if (toolCalls.length) clean = clean.replace(re, '').trim();
+    return { text: clean, toolCalls };
   }
 
   toOpenAIMessages(messages, system) {
@@ -45,12 +85,14 @@ export class OpenAIProvider {
   }
 
   async complete({ messages, tools, system }) {
+    const useText = this.toolMode === 'text';
+    const sysText = (system || '') + (useText ? this.toolInstructions(tools) : '');
     const body = {
       model: this.model,
-      messages: this.toOpenAIMessages(messages, system),
+      messages: this.toOpenAIMessages(messages, sysText),
       temperature: 0.6
     };
-    if (tools?.length) {
+    if (tools?.length && !useText) {
       body.tools = tools.map(t => ({
         type: 'function',
         function: { name: t.name, description: t.description, parameters: t.parameters }
@@ -79,6 +121,11 @@ export class OpenAIProvider {
     }
     const data = await res.json();
     const msg = data.choices?.[0]?.message || {};
+
+    if (this.toolMode === 'text') {
+      const parsed = this.parseTextToolCalls(msg.content || '');
+      return { text: parsed.text, toolCalls: parsed.toolCalls, raw: data };
+    }
 
     const toolCalls = (msg.tool_calls || []).map(tc => {
       let args = {};

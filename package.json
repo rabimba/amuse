@@ -13,6 +13,7 @@
     "test": "./bin/amuse test && node scripts/test_e2e.mjs",
     "test:e2e": "node scripts/test_e2e.mjs",
     "test:hatch": "node tests/scenarios/hatch_smoke.mjs",
+    "test:hatch:live": "node tests/scenarios/hatch_live.mjs",
     "test:live": "node scripts/test_live_e2e.mjs"
   },
   "keywords": [],
