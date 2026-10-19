@@ -51,27 +51,35 @@ echo ""
 # ------------------------------------------------------------------
 echo "==> [4/6] Running Muse Connectors, Clock, Notes & Desktop Diagnostics..."
 ./bin/amuse test
-echo "-> Testing Real-Time Clock & Multi-Timezone Grounding (get_current_time_and_environment):"
-./bin/amuse call get_current_time_and_environment '{}'
-echo "-> Testing Active Muse Connectors Registry (list_connectors):"
-./bin/amuse call list_connectors '{"category": "all"}' | head -c 400 && echo "..."
-echo "-> Testing Linux Markdown Note Sync (open_note 'About Amuse'):"
-./bin/amuse call open_note '{"query": "About Amuse", "open_on_desktop": false}'
-echo "-> Testing LinkedIn Social Connector Scheduling (social_media_action):"
-./bin/amuse call social_media_action '{"platform": "linkedin", "action": "schedule", "content": "Excited to share our Amuse Linux multimodal assistant demo!", "schedule_time": "09:00 CST", "open_in_browser": false}'
-echo "-> Testing Full-Disk File Assistant (manage_files list ~/Documents/AmuseNotes):"
-./bin/amuse call manage_files '{"action": "list", "path": "~/Documents/AmuseNotes"}'
-echo "-> Testing Muse Active Memory (save_memory & recall_memories):"
-./bin/amuse call save_memory '{"key": "preferred_timezone", "value": "America/Los_Angeles (PDT) & America/Chicago (CST/CDT)", "category": "preference"}'
-./bin/amuse call recall_memories '{"query": "timezone"}'
-echo "-> Testing Muse Action Plans (manage_action_plan):"
-./bin/amuse call manage_action_plan '{"action": "list"}'
-echo "-> Testing Muse Dynamic Custom Tool Builder (build_and_run_custom_tool):"
-./bin/amuse call build_and_run_custom_tool '{"tool_name": "system_summary", "language": "python", "code": "import platform\nprint(f\"Linux Host: {platform.node()} ({platform.release()})\")", "description": "Prints Linux host summary"}'
-echo "-> Testing Live Screen Vision Capture (take_screenshot):"
-./bin/amuse call take_screenshot '{"title": "E2E_Screen_Check"}'
-echo "-> Testing Reminders Connector (get_reminders):"
-./bin/amuse call get_reminders '{"include_completed": false}'
+if [ "$(uname -s)" = "Linux" ]; then
+  echo "-> Testing Real-Time Clock & Multi-Timezone Grounding (get_current_time_and_environment):"
+  ./bin/amuse call get_current_time_and_environment '{}'
+  echo "-> Testing Active Muse Connectors Registry (list_connectors):"
+  ./bin/amuse call list_connectors '{"category": "all"}' | head -c 400 && echo "..."
+  echo "-> Testing Linux Markdown Note Sync (open_note 'About Amuse'):"
+  ./bin/amuse call open_note '{"query": "About Amuse", "open_on_desktop": false}'
+  echo "-> Testing LinkedIn Social Connector Scheduling (social_media_action):"
+  ./bin/amuse call social_media_action '{"platform": "linkedin", "action": "schedule", "content": "Excited to share our Amuse Linux multimodal assistant demo!", "schedule_time": "09:00 CST", "open_in_browser": false}'
+  echo "-> Testing Full-Disk File Assistant (manage_files list ~/Documents/AmuseNotes):"
+  ./bin/amuse call manage_files '{"action": "list", "path": "~/Documents/AmuseNotes"}'
+  echo "-> Testing Muse Active Memory (save_memory & recall_memories):"
+  ./bin/amuse call save_memory '{"key": "preferred_timezone", "value": "America/Los_Angeles (PDT) & America/Chicago (CST/CDT)", "category": "preference"}'
+  ./bin/amuse call recall_memories '{"query": "timezone"}'
+  echo "-> Testing Muse Action Plans (manage_action_plan):"
+  ./bin/amuse call manage_action_plan '{"action": "list"}'
+  echo "-> Testing Muse Dynamic Custom Tool Builder (build_and_run_custom_tool):"
+  ./bin/amuse call build_and_run_custom_tool '{"tool_name": "system_summary", "language": "python", "code": "import platform\nprint(f\"Linux Host: {platform.node()} ({platform.release()})\")", "description": "Prints Linux host summary"}'
+  echo "-> Testing Live Screen Vision Capture (take_screenshot):"
+  ./bin/amuse call take_screenshot '{"title": "E2E_Screen_Check"}'
+  echo "-> Testing Reminders Connector (get_reminders):"
+  ./bin/amuse call get_reminders '{"include_completed": false}'
+else
+  echo "-> macOS: skipping Linux-only connector diagnostics (social/files/scheduler/custom-tool)"
+  echo "-> Testing Real-Time Clock (get_current_time_and_environment):"
+  ./bin/amuse call get_current_time_and_environment '{}'
+  echo "-> Testing Connectors Registry (list_connectors):"
+  ./bin/amuse call list_connectors '{"category": "all"}' | head -c 400 && echo "..."
+fi
 echo ""
 
 # ------------------------------------------------------------------
@@ -90,7 +98,7 @@ node "$DIR/scripts/test_live_e2e.mjs"
 if [ "$MODE" = "--gui" ] || [ "$MODE" = "--interactive" ]; then
   echo "==> Launching Interactive Amuse Ambient HUD (Press Double-Tap Option/Alt to toggle)..."
   exec ./bin/amuse start
-else
+elif [ "$(uname -s)" = "Linux" ]; then
   echo "==> Running Live Native GUI HUD + Gemini Live BidiGenerateContent Duplex Turn..."
   AMUSE_STARTUP_PROMPT="What is my first scheduled calendar event? Reply in one short sentence." \
   AMUSE_EXIT_ON_READY=1 \
@@ -102,5 +110,10 @@ else
   echo "✓ ALL 6 END-TO-END STAGES COMPLETED SUCCESSFULLY!"
   echo "  To keep the interactive HUD running continuously, run:"
   echo "    ./run.sh --gui   (or ./bin/amuse)"
+  echo "=================================================================="
+else
+  echo ""
+  echo "==> macOS: headless HUD hooks (AMUSE_STARTUP_PROMPT/EXIT_ON_READY) are Linux-only."
+  echo "    Launch the HUD manually: ./bin/amuse start"
   echo "=================================================================="
 fi

@@ -155,12 +155,15 @@ export class GeminiLiveClient extends EventEmitter {
 
   buildSystemPrompt() {
     const isLinux = process.platform === 'linux';
+    const displayServer = isLinux ? (process.env.WAYLAND_DISPLAY ? 'Wayland' : 'X11') : '';
+    const de = isLinux ? (process.env.XDG_CURRENT_DESKTOP || 'unknown DE') : '';
+    const osDesc = isLinux ? `Linux (${displayServer}, ${de})` : 'macOS';
     const homeDir = process.env.HOME || '~';
     const clockContext = this.getFormattedClockContext();
     const toolCount = Array.isArray(this.toolDeclarations) ? this.toolDeclarations.length : 0;
 
     const lines = [
-      `You are Amuse, a warm, witty, hyper-capable personal AI companion and agent running natively on the user's ${isLinux ? 'Linux desktop' : 'macOS desktop'}.`,
+      `You are Amuse, a warm, witty, hyper-capable personal AI companion and agent running natively on the user's ${osDesc} machine.`,
       `HUMAN COMMUNICATION STYLE: Speak and write like a real, thoughtful human friend and executive assistant—warm, natural, concise, and conversational (use contractions like "I've", "let's", "you're"). Never sound robotic, never recite raw JSON or file paths awkwardly, and always confirm the real action you just took on their computer.`,
       `CURRENT REAL-TIME SYSTEM CLOCK: ${clockContext}.`,
       `IMPORTANT TIME RULE: Always use the exact clock above (or call get_current_time_and_environment if available) when reasoning about times and timezones (such as 9 AM CST/CDT vs local PDT time). Never guess or hallucinate whether a time has already passed.`,
@@ -178,7 +181,9 @@ export class GeminiLiveClient extends EventEmitter {
         `- Memory & Action Plans: Call save_memory, recall_memories, and manage_action_plan.`,
         `- Custom Tool Builder: Call build_and_run_custom_tool to write and run a Python or Bash tool on the fly (may be disabled by the user's safety settings).`,
         `- Media, Volume & System Control: Call media_and_system_control or computer_control_action.`,
-        `- Notes, Calendar, Reminders, Messages, Contacts, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, search_contacts, manage_files, web_search_and_fetch, list_connectors, connect_service.`
+        `- Notes, Calendar, Reminders, Messages, Contacts, Files & Web Search: Use create_note, open_note, search_notes, create_calendar_event, create_reminder, send_message, search_contacts, manage_files, web_search_and_fetch, list_connectors, connect_service.`,
+        `SEAMLESS CONNECTOR UX RULE: If a tool is missing or returns empty, call list_connectors, tell the user what IS available/detected on their machine (check the "readiness" field), and offer the one-step connection path. Never ask the user to export or paste data manually. If a tool result contains a setup_hint, follow it. ANTI-ANCHORING: never repeat an old refusal — re-check your current tools each turn and answer from what they return now.`,
+        `SAFETY GATES: Some tools (run_command, custom tool builder, GUI input, social auto-submit) may be disabled by the user's safety settings. If a tool returns {"error":"safety_gate"}, name the AMUSE_ALLOW_* flag that enables it and let the user decide.`
       );
     } else {
       lines.push(

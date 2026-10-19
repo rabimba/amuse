@@ -2428,6 +2428,31 @@ private:
         return out.str();
     }
 
+    // Probe the actual backend state for a connector at query time.
+    // Returns "connected" only when the tool will genuinely work right now.
+    static std::string probeBackend(const std::string &id) {
+        if (id == "messages" || id == "calendar" || id == "reminders" || id == "contacts") {
+            // Local SQLite stores; check whether Evolution Data Server is reachable
+            int rc = system("busctl call org.gnome.evolution.dataserver.Calendar /org/gnome/evolution/dataserver/Calendar org.freedesktop.DBus.Peer Ping >/dev/null 2>&1");
+            return rc == 0 ? "connected" : "local_stub_no_eds";
+        }
+        if (id == "computer_control") {
+            if (access("/usr/bin/ffmpeg", X_OK) != 0) return "missing_ffmpeg";
+            if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) return "no_display";
+            return "connected";
+        }
+        if (id == "web_browser") {
+            int rc = system("python3 -c 'import playwright' >/dev/null 2>&1");
+            return rc == 0 ? "connected" : "missing_playwright";
+        }
+        if (id == "alarms_timers") {
+            if (access("/usr/bin/notify-send", X_OK) != 0) return "missing_notify_send";
+            return "connected";
+        }
+        // email (self-contained IMAP/SMTP), notes, memory, files, web search: no external deps
+        return "connected";
+    }
+
     std::string listConnectors(const std::string &category) {
         const bool filter = !category.empty() && category != "all";
         std::string sql = "SELECT id, name, category, status, permission, description, last_used FROM connectors ";
@@ -2455,6 +2480,7 @@ private:
                     << "\"name\":\"" << jsonEscape(col(1)) << "\","
                     << "\"category\":\"" << jsonEscape(col(2)) << "\","
                     << "\"status\":\"" << jsonEscape(col(3)) << "\","
+                    << "\"readiness\":\"" << jsonEscape(col(2) == "cloud" ? "available_no_oauth" : probeBackend(col(0))) << "\","
                     << "\"permission\":\"" << jsonEscape(col(4)) << "\","
                     << "\"description\":\"" << jsonEscape(col(5)) << "\","
                     << "\"last_used\":\"" << jsonEscape(col(6)) << "\""
@@ -4133,6 +4159,64 @@ private:
 // Amuse GTK3 + WebKit2GTK Floating HUD & Node Orchestrator Controller
 // ============================================================================
 
+// Find a usable node binary: AMUSE_NODE env → nvm → common paths → PATH.
+static std::string findNodeBinary() {
+    const char *envNode = getenv("AMUSE_NODE");
+    if (envNode && *envNode && access(envNode, X_OK) == 0) return envNode;
+
+    // nvm: ~/.nvm/versions/node/v*/bin/node (lexically last = newest version)
+    std::string nvmRoot = getHomeDir() + "/.nvm/versions/node";
+    DIR *d = opendir(nvmRoot.c_str());
+    if (d) {
+        std::string latest;
+        struct dirent *ent;
+        while ((ent = readdir(d)) != nullptr) {
+            if (ent->d_name[0] == 'v') {
+                std::string p = nvmRoot + "/" + ent->d_name + "/bin/node";
+                if (access(p.c_str(), X_OK) == 0) latest = p;
+            }
+        }
+        closedir(d);
+        if (!latest.empty()) return latest;
+    }
+
+    if (access("/usr/local/bin/node", X_OK) == 0) return "/usr/local/bin/node";
+    if (access("/usr/bin/node", X_OK) == 0) return "/usr/bin/node";
+    if (access("/snap/bin/node", X_OK) == 0) return "/snap/bin/node";
+
+    // Volta: ~/.volta/tools/image/node/<version>/bin/node
+    std::string voltaRoot = getHomeDir() + "/.volta/tools/image/node";
+    DIR *vd = opendir(voltaRoot.c_str());
+    if (vd) {
+        std::string latest;
+        struct dirent *ent;
+        while ((ent = readdir(vd)) != nullptr) {
+            if (ent->d_name[0] == '.') continue;
+            std::string p = voltaRoot + "/" + ent->d_name + "/bin/node";
+            if (access(p.c_str(), X_OK) == 0) latest = p;
+        }
+        closedir(vd);
+        if (!latest.empty()) return latest;
+    }
+
+    // Last resort: resolve via login shell PATH
+    std::string which = runCommandCapture("bash -lc 'command -v node' 2>/dev/null", 256);
+    while (!which.empty() && (which.back() == '\n' || which.back() == '\r')) which.pop_back();
+    if (!which.empty() && access(which.c_str(), X_OK) == 0) return which;
+    return "";
+}
+
+// Read provider from ~/.amuse/config.json ("gemini" | "openai" | "").
+static std::string readConfigProvider() {
+    std::string cfgPath = getHomeDir() + "/.amuse/config.json";
+    std::ifstream ifs(cfgPath);
+    if (!ifs.is_open()) return "";
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    JsonHelper cfg(ss.str());
+    return cfg.getString("provider", "");
+}
+
 class AmuseAppController {
 public:
     static AmuseAppController &instance() {
@@ -4451,7 +4535,25 @@ private:
 
         char cwdBuf[PATH_MAX];
         std::string cwd = getcwd(cwdBuf, sizeof(cwdBuf)) ? cwdBuf : ".";
-        std::string scriptPath = cwd + "/src/js/index.mjs";
+
+        // Choose orchestrator: AMUSE_ORCHESTRATOR env override, else config provider
+        // (provider=openai → hatch any-backend loop; default → legacy Gemini Live client)
+        const char *orchEnv = getenv("AMUSE_ORCHESTRATOR");
+        std::string scriptName = "index.mjs";
+        bool useHatch = (orchEnv && std::string(orchEnv) == "hatch");
+        if (!orchEnv || !*orchEnv) {
+            if (readConfigProvider() == "openai") useHatch = true;
+        }
+        if (useHatch) scriptName = "hatchOrchestrator.mjs";
+
+        std::string scriptPath = cwd + "/src/js/" + scriptName;
+
+        std::string nodeBin = findNodeBinary();
+        if (nodeBin.empty()) {
+            std::cerr << "[Amuse] ERROR: node binary not found. Set AMUSE_NODE=/path/to/node" << std::endl;
+            setStatus("error", "node not found — set AMUSE_NODE env var");
+            return;
+        }
 
         pid_t pid = fork();
         if (pid == 0) {
@@ -4462,7 +4564,7 @@ private:
             close(stdoutPipe[0]);
             close(stdoutPipe[1]);
 
-            execlp("node", "node", scriptPath.c_str(), nullptr);
+            execl(nodeBin.c_str(), "node", scriptPath.c_str(), nullptr);
             _exit(127);
         } else if (pid > 0) {
             nodePid_ = pid;
