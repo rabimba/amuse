@@ -182,7 +182,9 @@ export class GeminiLiveClient extends EventEmitter {
       );
     } else {
       lines.push(
-        `- macOS connectors: search_messages/get_recent_messages (iMessage), search_contacts, get_calendar_events/create_calendar_event, get_reminders/create_reminder, search_notes/create_note (Apple Notes). These read from and write to the user's real on-device apps.`
+        `- macOS connectors: search_messages/get_recent_messages (iMessage), search_contacts, get_calendar_events/create_calendar_event, get_reminders/create_reminder, search_notes/create_note (Apple Notes). These read from and write to the user's real on-device apps.`,
+        `- Email: email_action searches connected IMAP/SMTP accounts (connected via connect_email_account) and any on-device Thunderbird database. Sending requires showing the exact draft and calling again with confirm_send: true.`,
+        `- Memory: save_memory/recall_memories persist facts across sessions. Clock: get_current_time_and_environment.`
       );
     }
 

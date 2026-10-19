@@ -24,6 +24,7 @@ def find_thunderbird_dbs():
     patterns = [
         os.path.expanduser("~/snap/thunderbird/common/.thunderbird/*/global-messages-db.sqlite"),
         os.path.expanduser("~/.thunderbird/*/global-messages-db.sqlite"),
+        os.path.expanduser("~/Library/Thunderbird/Profiles/*/global-messages-db.sqlite"),  # macOS
     ]
     found = []
     for pat in patterns:
@@ -319,7 +320,6 @@ def send_or_compose_email(to_addr, subject, body, attachment_path="", use_on_dev
     # 2. Launch on-device Thunderbird compose window if available
     launched_thunderbird = False
     if use_on_device_client and not sent_via_smtp:
-        tb_bin = "/snap/bin/thunderbird" if os.path.exists("/snap/bin/thunderbird") else "thunderbird"
         safe_to = to_addr.replace("'", "")
         safe_subj = subject.replace("'", "")
         safe_body = body.replace("'", "")
@@ -327,13 +327,24 @@ def send_or_compose_email(to_addr, subject, body, attachment_path="", use_on_dev
         if attachment_path and os.path.exists(attachment_path):
             compose_arg += f",attachment='file://{os.path.abspath(attachment_path)}'"
         try:
-            subprocess.Popen(
-                [tb_bin, "-compose", compose_arg],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            launched_thunderbird = True
+            if sys.platform == "darwin":
+                if os.path.exists("/Applications/Thunderbird.app"):
+                    subprocess.Popen(
+                        ["open", "-a", "Thunderbird", "--args", "-compose", compose_arg],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    launched_thunderbird = True
+            else:
+                tb_bin = "/snap/bin/thunderbird" if os.path.exists("/snap/bin/thunderbird") else "thunderbird"
+                subprocess.Popen(
+                    [tb_bin, "-compose", compose_arg],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                launched_thunderbird = True
         except Exception:
             pass
 
