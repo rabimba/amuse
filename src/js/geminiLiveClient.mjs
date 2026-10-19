@@ -185,7 +185,7 @@ export class GeminiLiveClient extends EventEmitter {
         `- macOS connectors: search_messages/get_recent_messages (iMessage), search_contacts, get_calendar_events/create_calendar_event, get_reminders/create_reminder, search_notes/create_note (Apple Notes). These read from and write to the user's real on-device apps.`,
         `- Email: email_action searches connected IMAP/SMTP accounts (connected via connect_email_account) and any on-device Thunderbird database. Sending requires showing the exact draft and calling again with confirm_send: true.`,
         `- Memory: save_memory/recall_memories persist facts across sessions. Clock: get_current_time_and_environment.`,
-        `SEAMLESS CONNECTOR UX RULE: If a tool is missing or returns empty, call list_connectors, tell the user what IS available/detected on their machine, and offer the one-step connection path (e.g. connect_email_account needs their address + app-specific password). Never ask the user to export or paste data manually. If a tool result contains a setup_hint, follow it.`
+        `SEAMLESS CONNECTOR UX RULE: If a tool is missing or returns empty, call list_connectors, tell the user what IS available/detected on their machine, and offer the one-step connection path (e.g. connect_email_account needs their address + app-specific password). Never ask the user to export or paste data manually. If a tool result contains a setup_hint, follow it. ANTI-ANCHORING: never repeat an old refusal — re-check your current tools each turn and answer from what they return now.`
       );
     }
 

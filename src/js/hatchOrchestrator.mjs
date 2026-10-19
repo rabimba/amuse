@@ -23,6 +23,11 @@ try {
 
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
+// If the native host dies, our stdin pipe closes — exit instead of becoming
+// an orphan serving stale tools/history.
+rl.on('close', () => process.exit(0));
+process.stdin.on('end', () => process.exit(0));
+
 rl.on('line', async (line) => {
   if (!line || !line.trim()) return;
   let msg;
@@ -55,6 +60,11 @@ rl.on('line', async (line) => {
           }
         });
         session.history = messages;
+        // Trim history so old turns (and any old refusals) stop anchoring the
+        // model, and context stays bounded for local models.
+        if (session.history.length > 30) {
+          session.history = session.history.slice(-30);
+        }
         if (text) sendToNative({ type: 'transcript', role: 'agent', text });
         sendToNative({ type: 'agent_status', status: 'idle', details: 'Ready' });
       } catch (err) {

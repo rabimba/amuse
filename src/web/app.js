@@ -161,11 +161,11 @@ if (connectorsBtn) {
 function renderMuseIdeasFeed() {
   const ideas = [
     {
-      title: '✉️ Proactive Idea: Summarize Real Thunderbird & IMAP Emails',
+      title: '✉️ Proactive Idea: Summarize Your Latest Emails',
       badge: 'EMAIL',
-      subtitle: 'On-Device Thunderbird + Hosted IMAP/SMTP',
-      body: 'Query your on-device Thunderbird inbox and any connected IMAP accounts, or connect a new hosted email account.',
-      prompt: 'Can you check my real emails from Thunderbird and summarize the latest ones?'
+      subtitle: 'On-Device Mail Clients + Hosted IMAP/SMTP',
+      body: 'Check your on-device mail client and any connected IMAP accounts, or connect a new email account in one step.',
+      prompt: 'Check my email and summarize the latest messages.'
     },
     {
       title: '📸 Proactive Idea: Screenshot & Post on LinkedIn End-to-End',
