@@ -91,6 +91,85 @@ def get_thunderbird_accounts(db_path):
     return accounts
 
 
+def detect_on_device_clients():
+    """Which mail clients exist on this machine, and can we read them?"""
+    clients = []
+    tb_dbs = find_thunderbird_dbs()
+    tb_dirs = (glob.glob(os.path.expanduser("~/Library/Thunderbird/Profiles"))
+               + glob.glob(os.path.expanduser("~/.thunderbird/*"))
+               + glob.glob(os.path.expanduser("~/snap/thunderbird/common/.thunderbird/*")))
+    if tb_dbs or tb_dirs:
+        clients.append({
+            "client": "Thunderbird",
+            "status": "readable" if tb_dbs else "installed_no_index",
+        })
+    if sys.platform == "darwin":
+        mail_dir = os.path.expanduser("~/Library/Mail")
+        if os.path.isdir(mail_dir):
+            idx = [p for p in glob.glob(os.path.join(mail_dir, "V*/MailData/Envelope Index"))
+                   if os.path.exists(p)]
+            if idx:
+                clients.append({"client": "Apple Mail", "status": "readable", "db": idx[0]})
+            else:
+                clients.append({
+                    "client": "Apple Mail",
+                    "status": "needs_full_disk_access",
+                    "hint": "Grant Full Disk Access to the host app in System Settings > Privacy & Security, then Apple Mail can be read.",
+                })
+        outlook = glob.glob(os.path.expanduser(
+            "~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/*/Data/Outlook.sqlite"))
+        if outlook:
+            clients.append({"client": "Microsoft Outlook", "status": "installed"})
+    return clients
+
+
+def search_apple_mail(query="", limit=12):
+    """Best-effort read of Apple Mail's Envelope Index (subjects/senders/dates only;
+    message bodies live in .emlx files). Empty when Full Disk Access is missing."""
+    messages = []
+    total = 0
+    if sys.platform != "darwin":
+        return {"available": False, "messages": messages, "total": 0}
+    idxs = [p for p in glob.glob(os.path.expanduser("~/Library/Mail/V*/MailData/Envelope Index"))
+            if os.path.exists(p)]
+    for idx in idxs:
+        try:
+            conn = sqlite3.connect(f"file:{idx}?mode=ro", uri=True)
+            cur = conn.cursor()
+            total = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            sql = """
+                SELECT s.subject, a.address, m.date_received
+                FROM messages m
+                LEFT JOIN subjects s ON s.ROWID = m.subject_id
+                LEFT JOIN addresses a ON a.ROWID = m.sender
+            """
+            params = []
+            if query:
+                sql += " WHERE s.subject LIKE ?"
+                params.append(f"%{query}%")
+            sql += " ORDER BY m.date_received DESC LIMIT ?"
+            params.append(int(limit))
+            for subj, sender, ts in cur.execute(sql, params).fetchall():
+                dt_str = ""
+                if ts:
+                    try:
+                        dt_str = datetime.datetime.fromtimestamp(ts + 978307200).strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        dt_str = str(ts)
+                messages.append({
+                    "source": "on_device_apple_mail",
+                    "date": dt_str,
+                    "sender": sender or "",
+                    "subject": subj or "(No Subject)",
+                    "snippet": "(subject/sender only — full body requires opening the .emlx file)",
+                })
+            conn.close()
+            break
+        except Exception:
+            continue
+    return {"available": True, "messages": messages, "total": total}
+
+
 def search_on_device_emails(query="", sender="", limit=12):
     dbs = find_thunderbird_dbs()
     results = []
@@ -153,11 +232,16 @@ def search_on_device_emails(query="", sender="", limit=12):
         except Exception as e:
             results.append({"error": str(e), "db": db_path})
 
+    apple_mail = search_apple_mail(query=query, limit=limit)
+    clients = detect_on_device_clients()
+    client_names = [c["client"] for c in clients if c["status"] == "readable"] or [c["client"] for c in clients]
+
     return {
-        "on_device_client": "Thunderbird",
-        "total_on_device_messages": total_indexed,
+        "on_device_client": " + ".join(client_names) if client_names else "none",
+        "total_on_device_messages": total_indexed + apple_mail.get("total", 0),
         "connected_on_device_accounts": accounts,
-        "messages": results,
+        "available_on_device_clients": clients,
+        "messages": results + apple_mail["messages"],
     }
 
 
@@ -429,10 +513,25 @@ def main():
             "hosted_messages": hosted["hosted_messages"],
             "on_device_messages": on_device["messages"],
             "note": (
-                "These are REAL emails from the user's on-device Thunderbird database and/or connected hosted IMAP accounts. "
+                "These are REAL emails from the user's on-device mail client(s) and/or connected hosted IMAP accounts. "
                 "To connect an additional hosted IMAP/SMTP account (Gmail App Password, Office365, etc.), call connect_email_account."
             ),
         }
+        if on_device.get("available_on_device_clients") is not None:
+            out["available_on_device_clients"] = on_device["available_on_device_clients"]
+        # Seamless UX: when nothing is connected/readable, tell the agent exactly
+        # what to offer instead of refusing.
+        readable = [c for c in on_device.get("available_on_device_clients", []) if c["status"] == "readable"]
+        if not hosted["hosted_accounts"] and not readable and not on_device["messages"]:
+            detected = [c["client"] for c in on_device.get("available_on_device_clients", [])]
+            out["setup_hint"] = (
+                "No email source is connected yet. "
+                + (f"Detected on this machine: {', '.join(detected)}. " if detected else "")
+                + "Offer to connect an email account with connect_email_account — ask the user for their "
+                  "email address and an app-specific password (Gmail: myaccount.google.com > Security > App Passwords; "
+                  "iCloud: appleid.apple.com > Sign-In and Security > App-Specific Passwords). "
+                  "Do NOT ask the user to export or paste emails manually."
+            )
         print(json.dumps(out))
     elif action == "connect_account":
         res = connect_hosted_account(
