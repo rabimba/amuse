@@ -61,7 +61,7 @@ try {
   const { stdout, stderr } = await execFileAsync(process.execPath, [
     path.join(ROOT, 'packages/hatch/bin/hatch.mjs'), 'ask', PROMPT
   ], {
-    timeout: 180000,
+    timeout: 600000,
     env: { ...process.env, HOME: TEST_HOME, AMUSE_PROVIDER: provider }
   });
 

@@ -107,25 +107,73 @@
     [self sendToNode:@{@"type": @"voice_stopped"}];
 }
 
+- (NSString *)findNodeBinary {
+    // Priority: explicit env → known install locations (nvm, homebrew, volta) → PATH
+    NSString *envNode = NSProcessInfo.processInfo.environment[@"AMUSE_NODE"];
+    if (envNode.length && [[NSFileManager defaultManager] fileExistsAtPath:envNode]) return envNode;
+
+    NSMutableArray<NSString *> *candidates = [NSMutableArray arrayWithArray:@[
+        [NSHomeDirectory() stringByAppendingPathComponent:@".nvm/versions/node/v24.21.0/bin/node"],
+        @"/usr/local/bin/node",
+        @"/opt/homebrew/bin/node"
+    ]];
+    // Volta: ~/.volta/tools/image/node/<version>/bin/node
+    NSString *voltaRoot = [NSHomeDirectory() stringByAppendingPathComponent:@".volta/tools/image/node"];
+    NSArray *voltaVersions = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:voltaRoot error:nil];
+    for (NSString *v in voltaVersions) {
+        [candidates addObject:[NSString stringWithFormat:@"%@/%@/bin/node", voltaRoot, v]];
+    }
+    for (NSString *cand in candidates) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:cand]) return cand;
+    }
+    // Last resort: resolve via login shell PATH
+    NSTask *which = [[NSTask alloc] init];
+    which.executableURL = [NSURL fileURLWithPath:@"/usr/bin/env"];
+    which.arguments = @[@"bash", @"-lc", @"command -v node"];
+    NSPipe *pipe = [NSPipe pipe];
+    which.standardOutput = pipe;
+    which.standardError = [NSFileHandle fileHandleWithStandardError];
+    if ([which launchAndReturnError:nil]) {
+        [which waitUntilExit];
+        NSData *d = [[pipe fileHandleForReading] readDataToEndOfFile];
+        NSString *p = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]
+                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (p.length && [[NSFileManager defaultManager] fileExistsAtPath:p]) return p;
+    }
+    return nil;
+}
+
 - (void)launchNodeOrchestrator {
     NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
-    NSString *nodeScript = [cwd stringByAppendingPathComponent:@"src/js/index.mjs"];
-    
-    _nodeTask = [[NSTask alloc] init];
-    
-    // Look for node in standard paths
-    NSString *nodePath = @"/usr/local/bin/node";
-    NSString *nvmNode = [NSHomeDirectory() stringByAppendingPathComponent:@".nvm/versions/node/v24.21.0/bin/node"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:nvmNode]) {
-        nodePath = nvmNode;
-    } else if (![[NSFileManager defaultManager] fileExistsAtPath:nodePath]) {
-        nodePath = @"/opt/homebrew/bin/node";
+
+    // Choose orchestrator: env override, else config provider
+    // (provider=openai → hatch; anything else → legacy Gemini Live client).
+    NSString *orchEnv = NSProcessInfo.processInfo.environment[@"AMUSE_ORCHESTRATOR"];
+    NSString *scriptName = @"index.mjs";
+    BOOL useHatch = [orchEnv isEqualToString:@"hatch"];
+    if (!orchEnv.length) {
+        NSString *cfgPath = [NSHomeDirectory() stringByAppendingPathComponent:@".amuse/config.json"];
+        NSData *cfgData = [NSData dataWithContentsOfFile:cfgPath];
+        if (cfgData) {
+            NSDictionary *cfg = [NSJSONSerialization JSONObjectWithData:cfgData options:0 error:nil];
+            if ([cfg[@"provider"] isEqualToString:@"openai"]) useHatch = YES;
+        }
     }
-    
+    if (useHatch) scriptName = @"hatchOrchestrator.mjs";
+    NSString *nodeScript = [cwd stringByAppendingPathComponent:[NSString stringWithFormat:@"src/js/%@", scriptName]];
+
+    NSString *nodePath = [self findNodeBinary];
+    if (!nodePath) {
+        NSLog(@"[Amuse] ERROR: node binary not found. Set AMUSE_NODE=/path/to/node");
+        [[AmuseHUD sharedHUD] setStatus:@"error" details:@"node not found — set AMUSE_NODE env var"];
+        return;
+    }
+
+    _nodeTask = [[NSTask alloc] init];
     _nodeTask.executableURL = [NSURL fileURLWithPath:nodePath];
     _nodeTask.arguments = @[nodeScript];
     _nodeTask.currentDirectoryURL = [NSURL fileURLWithPath:cwd];
-    
+
     _nodeStdinPipe = [NSPipe pipe];
     _nodeStdoutPipe = [NSPipe pipe];
     _nodeTask.standardInput = _nodeStdinPipe;
